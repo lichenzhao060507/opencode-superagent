@@ -8,7 +8,8 @@
   "private": true,
   "scripts": {
     "build": "node tui/build.mjs",
-    "sync": "node scripts/sync.mjs"
+    "sync": "node scripts/sync.mjs",
+    "check": "node scripts/check.mjs"
   },
   "repository": {
     "type": "git",
