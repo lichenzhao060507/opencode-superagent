@@ -7,7 +7,7 @@ import { existsSync } from "node:fs"
 import { spawnSync } from "node:child_process"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, pathToFileURL } from "node:url"
 
 const repo = dirname(dirname(fileURLToPath(import.meta.url)))
 const home = homedir()
@@ -42,11 +42,22 @@ for (const marker of ["superagent.panel", "superagent.fold", "editProfile", "wri
 const syntax = spawnSync(process.execPath, ["--check", join(repo, "tui/dist/tui.js")], { encoding: "utf8" })
 check(syntax.status === 0, `dist/tui.js 语法检查失败：${(syntax.stderr ?? "").split("\n")[0]}`)
 
-// 4. 两边 writeAgentFile 的关键字段一致
-const tuiSource = await readFile(join(repo, "tui/src/tui.tsx"), "utf8")
-for (const marker of ["## 长期记忆", "## 可用 MCP", "## 相关技能", "mode: all"]) {
-  check(tuiSource.includes(marker), `tui 的 writeAgentFile 缺少：${marker}`)
-  check(server.includes(marker), `server 的 writeAgentFile 缺少：${marker}`)
+// 4. 两边的 writeAgentFile 规则一致：用 TUI 的编译产物重新生成一遍，
+//    必须与磁盘上由服务端写出的文件逐字相同。
+const { agentMarkdown } = await import(pathToFileURL(join(repo, "tui/dist/agent-file.js")).href)
+const profilesForDiff = existsSync(join(data, "profiles.json"))
+  ? JSON.parse(await readFile(join(data, "profiles.json"), "utf8"))
+  : []
+for (const profile of profilesForDiff) {
+  const slug = String(profile.name).trim().replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "-")
+  const onDisk = join(home, ".config", "opencode", "agents", `${slug}.md`)
+  if (!existsSync(onDisk)) continue
+  const expected = agentMarkdown(profile)
+  const actual = await readFile(onDisk, "utf8")
+  check(
+    expected === actual,
+    `TUI 与 server 生成的 agent 定义不一致（${profile.name}）：\n--- TUI 预期\n${expected}\n--- 磁盘实际\n${actual}`,
+  )
 }
 
 // 5. 磁盘状态：每个 profile 都要有对应的 agent 定义

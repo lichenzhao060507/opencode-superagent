@@ -16,7 +16,7 @@ const targets = [
   {
     from: join(repo, "tui"),
     to: join(homedir(), ".opencode", "plugins", "superagent-tui"),
-    files: ["index.ts", "tui.ts", "package.json", "dist/tui.js", "src/tui.tsx"],
+    files: ["index.ts", "tui.ts", "package.json", "dist/tui.js", "dist/agent-file.js", "src/tui.tsx", "src/agent-file.ts"],
   },
 ]
 

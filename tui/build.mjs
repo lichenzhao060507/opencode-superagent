@@ -30,21 +30,24 @@ if (!shared) {
 const require = createRequire(shared)
 const babel = require("@babel/core")
 
-const filename = join(here, "src", "tui.tsx")
-const source = await readFile(filename, "utf8")
+const entries = [
+  { from: join(here, "src", "tui.tsx"), to: join(here, "dist", "tui.js") },
+  { from: join(here, "src", "agent-file.ts"), to: join(here, "dist", "agent-file.js") },
+]
 
-const result = await babel.transformAsync(source, {
-  filename,
-  babelrc: false,
-  configFile: false,
-  presets: [
-    [require.resolve("@babel/preset-typescript"), { isTSX: true, allExtensions: true }],
-    [require.resolve("babel-preset-solid"), { moduleName: "@opentui/solid", generate: "universal" }],
-  ],
-})
-
-if (!result?.code) throw new Error("babel 没有输出")
-
-await mkdir(join(here, "dist"), { recursive: true })
-await writeFile(join(here, "dist", "tui.js"), result.code, "utf8")
-console.log("built tui/dist/tui.js")
+for (const entry of entries) {
+  const source = await readFile(entry.from, "utf8")
+  const result = await babel.transformAsync(source, {
+    filename: entry.from,
+    babelrc: false,
+    configFile: false,
+    presets: [
+      [require.resolve("@babel/preset-typescript"), { isTSX: true, allExtensions: true }],
+      [require.resolve("babel-preset-solid"), { moduleName: "@opentui/solid", generate: "universal" }],
+    ],
+  })
+  if (!result?.code) throw new Error(`babel 没有输出：${entry.from}`)
+  await mkdir(dirname(entry.to), { recursive: true })
+  await writeFile(entry.to, result.code, "utf8")
+  console.log(`built ${entry.to.replace(here, "tui")}`)
+}

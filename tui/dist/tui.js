@@ -11,6 +11,7 @@ import { For, Show, createSignal, onCleanup } from "solid-js";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { agentSlug, writeAgentFile as writeAgentMarkdown } from "./agent-file.js";
 
 /**
  * superagent 的 TUI 部分。
@@ -63,20 +64,10 @@ async function saveProfiles(profiles) {
   });
   await writeFile(PROFILES, JSON.stringify(profiles, null, 2), "utf8");
 }
-function agentSlug(name) {
-  return name.trim().replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "-");
-}
 
-/** 与服务端 writeAgentFile 保持一致：改了这里也要改 server/index.ts。 */
+/** 与服务端 server/index.ts 的 writeAgentFile 等价，规则在 src/agent-file.ts。 */
 async function writeAgentFile(profile) {
-  const body = [profile.prompt ?? "", profile.memory ? `## 长期记忆\n${profile.memory}` : "", profile.mcp?.length ? `## 可用 MCP\n优先使用：${profile.mcp.join("、")}。` : "", profile.skills?.length ? `## 相关技能\n需要时加载：${profile.skills.join("、")}。` : ""].filter(Boolean).join("\n\n");
-  const front = ["---", `description: ${JSON.stringify(profile.description ?? profile.name)}`, "mode: all", ...(profile.model ? [`model: ${profile.model}`] : []), "---", "", body || profile.name, ""].join("\n");
-  const path = join(AGENTS_DIR, `${agentSlug(profile.name)}.md`);
-  await mkdir(dirname(path), {
-    recursive: true
-  });
-  await writeFile(path, front, "utf8");
-  return path;
+  return writeAgentMarkdown(profile, AGENTS_DIR);
 }
 async function removeAgentFile(name) {
   await rm(join(AGENTS_DIR, `${agentSlug(name)}.md`), {
