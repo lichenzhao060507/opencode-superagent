@@ -2,7 +2,7 @@
 //
 // 为什么是两个位置：服务端放 ~/.config 才对所有项目生效，
 // TUI 部分只有 ~/.opencode 才会被客户端扫到。详见 README。
-import { cp, mkdir, rm } from "node:fs/promises"
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
@@ -37,5 +37,18 @@ for (const target of targets) {
     console.log(`✓ ${file} -> ${target.to}`)
   }
 }
+
+// TUI 客户端只监视插件根目录的 index.ts，改 dist 不会触发重载。
+// 每次同步后改写这个标记，让客户端重新加载 TUI 部分。
+const tuiIndex = join(homedir(), ".opencode", "plugins", "superagent-tui", "index.ts")
+const stamp = `// build: ${new Date().toISOString()}`
+const current = await readFile(tuiIndex, "utf8")
+const stripped = current
+  .split("\n")
+  .filter((line) => !line.startsWith("// build:"))
+  .join("\n")
+  .replace(/\n+$/, "\n")
+await writeFile(tuiIndex, `${stripped}${stamp}\n`, "utf8")
+console.log("✓ 已更新构建标记，TUI 会重新加载")
 
 console.log("\n同步完成，执行 /reload 生效。")
