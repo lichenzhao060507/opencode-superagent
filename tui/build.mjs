@@ -1,10 +1,10 @@
 // 编译 TUI 部分。
 //
-// 两个约束：
-// 1. OpenCode 不能直接加载 .tsx，Solid JSX 必须先用 babel-preset-solid 编译；
-// 2. TUI 入口不能有相对 import —— 客户端加载的是单文件，`./agent-file.js` 那种
-//    兄弟模块会解析失败（参考 wesearch：它的 dist/tui.js 是 66KB 的完整包）。
-// 所以这里把 agent-file 的代码拼进同一个产物，dist/tui.js 自成一体。
+// 1. OpenCode 不能直接加载 .tsx，Solid JSX 必须先用 babel-preset-solid 编译。
+// 2. 相对 import 其实能用（wesearch 的 dist/tui.js 就 import 了 ./rpc.js、
+//    ./columns.js，加载正常）。这里仍然把 agent-file 拼进同一个产物，是因为
+//    scripts/sync.mjs 只拷固定文件列表——单文件少一个「忘了拷兄弟模块」的坑。
+// 所以 dist/tui.js 自成一体。
 //
 // dist/agent-file.js 仍然单独产出：scripts/check.mjs 拿它做「与服务端写出的文件
 // 逐字一致」的交叉检查。

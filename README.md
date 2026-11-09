@@ -9,7 +9,11 @@ OpenCode 的插件加载位置决定了它能提供什么：
 | 部分 | 必须放哪里 | 原因 |
 |---|---|---|
 | 服务端（工具、账本、看门狗、审查） | `~/.config/opencode/plugins/superagent/` | 这个位置对所有项目目录生效；放 `~/.opencode/plugins/` 只在主目录生效，项目会话里看不到工具 |
-| TUI（侧边栏、`/sa`） | `~/.opencode/plugins/superagent-tui/` | TUI 部分只从这个位置被客户端扫到；放 `.config` 时 `/api/plugin` 只报 `features.server` |
+| TUI（侧边栏、`/sa`） | `~/.opencode/plugins/superagent-tui/` | 该位置实测可用：`/api/plugin` 报 `features {server: true, tui: true}`、`status active` |
+
+宿主解析入口的规则（从二进制里核过）：目录里有 `package.json` 且带 `name` + `exports` 时，服务端取 `exports["."]`、TUI 取 `exports["./tui"]`，按包自引用解析；根目录的 `index.ts` / `tui.ts` 只是兜底垫片，不是主入口。
+
+> 早期把 TUI 放 `.config` 时只报 `features.server`。按上面的规则，先查那份 `package.json` 有没有 `exports["./tui"]`，再判断是不是目录本身的限制——这一条至今没有查清，别当成结论引用。
 
 两个包只通过磁盘上的账本镜像通信：
 
@@ -124,10 +128,28 @@ superagent_task_dispatch({ title: "…", brief: "…", gate: "data" })
 
 ## TUI
 
-- 侧边栏 `sidebar.content`，在 MCP 面板和 Tavily 配额之间：`▾ Superagent · 空闲 / N 个运行中 / N 个待处理`，展开时列运行中任务与最近两条已完成。
-- `/saf`：收起 / 展开侧边栏。
-- `/sa`：打开面板——上半是 agent 设定（选中逐项编辑提示词 / 记忆 / MCP / skill / 审查类型 / 说明书 / worker agent / 模型），下半是任务（选中跳到对应会话），最后一条是「＋ 新建 agent」。改完直接落盘 `profiles.json` 并重写 agent 定义，`@` 列表跟着变。
-- 各插件在同一槽位里是兄弟节点，只能整体靠前或靠后，顺序取决于插件加载顺序。
+侧边栏 `sidebar.content`，在 MCP 面板和 Tavily 配额之间，四段结构：
+
+- 表头：`▾ Superagent` 加粗 + 右对齐状态词（`空闲` / `N 运行中` / `N 待处理`），**点击表头即收起/展开**；
+- 分段按钮：`│任务面板│收起面板│新建代理│`，每格 10 列，悬停增亮；
+- 展开时列运行中与待处理任务（最多 3 条，都空时退回最近两条已完成），标题走正文色、时长走弱色；
+- 末尾一行 `N 个代理 · /sa 编辑`（没有 profile 时不显示）。
+
+宽度在 JS 里算好再送进文本节点，不依赖布局引擎：CJK 记 2 列，总宽 34（侧栏内容宽实测 37）。
+
+命令与鼠标等价：
+
+| 命令 | 作用 | 鼠标等价 |
+|---|---|---|
+| `/sa` | 面板：agent 设定 + 任务列表 | 点「任务面板」 |
+| `/saf` | 收起 / 展开侧边栏 | 点表头或「收起面板」 |
+| `/san` | 新建 agent | 点「新建代理」 |
+
+`/sa` 面板上半是 agent 设定（逐项编辑提示词 / 记忆 / MCP / skill / 审查类型 / 说明书 / worker agent / 模型），下半是任务（选中跳到对应会话），最后一条是「＋ 新建 agent」。改完直接落盘 `profiles.json` 并重写 agent 定义，`@` 列表跟着变。
+
+**热重载不可靠。** TUI 客户端对插件目录的监视会失效——实测连改写 `index.ts` 都不触发重载，`scripts/sync.mjs` 末尾那句「执行 /reload 生效」只在监视器活着时成立。改完 TUI 后必须**完全退出所有 opencode 进程再开**；判断是否真的换了代码，看侧边栏表头版本号与 `~/.local/share/opencode/superagent/tui.log`。
+
+各插件在同一槽位里是兄弟节点，只能整体靠前或靠后，顺序取决于插件加载顺序。
 
 ## 配置
 
