@@ -4,7 +4,7 @@ import { For, Show, createSignal, onCleanup } from "solid-js"
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
-import { agentSlug, writeAgentFile as writeAgentMarkdown } from "./agent-file.js"
+import { agentSlug, writeAgentFile } from "./agent-file.js"
 
 /**
  * superagent 的 TUI 部分。
@@ -85,9 +85,9 @@ async function saveProfiles(profiles: ProfileRow[]) {
   await writeFile(PROFILES, JSON.stringify(profiles, null, 2), "utf8")
 }
 
-/** 与服务端 server/index.ts 的 writeAgentFile 等价，规则在 src/agent-file.ts。 */
-async function writeAgentFile(profile: ProfileRow) {
-  return writeAgentMarkdown(profile, AGENTS_DIR)
+/** 规则与 server/index.ts 的 writeAgentFile 一致，实现共用 src/agent-file.ts。 */
+function saveAgentFile(profile: ProfileRow) {
+  return writeAgentFile(profile, AGENTS_DIR)
 }
 
 async function removeAgentFile(name: string) {
@@ -235,7 +235,7 @@ async function openPanel(context: any) {
       if (!name) return
       const profilesNext = [...profiles, { name: name.trim() }]
       await saveProfiles(profilesNext)
-      await writeAgentFile({ name: name.trim() })
+      await saveAgentFile({ name: name.trim() })
       await editProfile(context, name.trim())
       return
     }
@@ -313,7 +313,7 @@ async function editProfile(context: any, name: string) {
 
   const updated = profiles.map((item) => (item.name === name ? next : item))
   await saveProfiles(updated)
-  await writeAgentFile(next)
+  await saveAgentFile(next)
   probe(`已保存 ${name}.${picked}`)
   context.ui.toast.show({ message: `已更新「${name}」的${field.label}`, variant: "success" })
 }

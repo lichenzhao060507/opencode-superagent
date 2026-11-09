@@ -1,17 +1,42 @@
-import { effect as _$effect } from "@opentui/solid";
-import { insertNode as _$insertNode } from "@opentui/solid";
-import { memo as _$memo } from "@opentui/solid";
-import { createComponent as _$createComponent } from "@opentui/solid";
-import { insert as _$insert } from "@opentui/solid";
-import { setProp as _$setProp } from "@opentui/solid";
-import { createElement as _$createElement } from "@opentui/solid";
-/** @jsxImportSource @opentui/solid */
+// 由 tui/build.mjs 生成：agent-file 已内联，单文件、无相对 import。
+
+import { mkdir, writeFile, appendFile, readFile, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { effect as _$effect, insertNode as _$insertNode, memo as _$memo, createComponent as _$createComponent, insert as _$insert, setProp as _$setProp, createElement as _$createElement } from "@opentui/solid";
 import { Plugin, usePlugin } from "@opencode/plugin/tui";
 import { For, Show, createSignal, onCleanup } from "solid-js";
-import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-import { agentSlug, writeAgentFile as writeAgentMarkdown } from "./agent-file.js";
+
+/**
+ * agent 定义文件的生成规则。
+ *
+ * 服务端 server/index.ts 里有一份等价实现（插件目录之间互相 import 不到），
+ * 两份必须产出同样的内容——`npm run check` 会拿磁盘上的真实文件来对。
+ */
+
+function agentSlug(name) {
+  return name.trim().replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "-");
+}
+function agentMarkdown(profile) {
+  const body = [profile.prompt ?? "", profile.memory ? `## 长期记忆\n${profile.memory}` : "", profile.mcp?.length ? `## 可用 MCP\n优先使用：${profile.mcp.join("、")}。` : "", profile.skills?.length ? `## 相关技能\n需要时加载：${profile.skills.join("、")}。` : ""].filter(Boolean).join("\n\n");
+  return ["---", `description: ${JSON.stringify(profile.description ?? profile.name)}`, "mode: all", ...(profile.model ? [`model: ${profile.model}`] : []), "---", "", body || profile.name, ""].join("\n");
+}
+async function writeAgentFile(profile, baseDir) {
+  const path = join(baseDir, `${agentSlug(profile.name)}.md`);
+  await mkdir(dirname(path), {
+    recursive: true
+  });
+  await writeFile(path, agentMarkdown(profile), "utf8");
+  return path;
+}
+
+/** @jsxImportSource @opentui/solid */
+
+
+
+
+
+
 
 /**
  * superagent 的 TUI 部分。
@@ -66,9 +91,9 @@ async function saveProfiles(profiles) {
   await writeFile(PROFILES, JSON.stringify(profiles, null, 2), "utf8");
 }
 
-/** 与服务端 server/index.ts 的 writeAgentFile 等价，规则在 src/agent-file.ts。 */
-async function writeAgentFile(profile) {
-  return writeAgentMarkdown(profile, AGENTS_DIR);
+/** 规则与 server/index.ts 的 writeAgentFile 一致，实现共用 src/agent-file.ts。 */
+function saveAgentFile(profile) {
+  return writeAgentFile(profile, AGENTS_DIR);
 }
 async function removeAgentFile(name) {
   await rm(join(AGENTS_DIR, `${agentSlug(name)}.md`), {
@@ -231,7 +256,7 @@ async function openPanel(context) {
         name: name.trim()
       }];
       await saveProfiles(profilesNext);
-      await writeAgentFile({
+      await saveAgentFile({
         name: name.trim()
       });
       await editProfile(context, name.trim());
@@ -331,10 +356,11 @@ async function editProfile(context, name) {
   }
   const updated = profiles.map(item => item.name === name ? next : item);
   await saveProfiles(updated);
-  await writeAgentFile(next);
+  await saveAgentFile(next);
   probe(`已保存 ${name}.${picked}`);
   context.ui.toast.show({
     message: `已更新「${name}」的${field.label}`,
     variant: "success"
   });
 }
+

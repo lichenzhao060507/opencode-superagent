@@ -38,6 +38,13 @@ for (const target of targets) {
   }
 }
 
+// 服务端包必须是纯服务端：以前误放在这里的 tui 部分会和新包争夺同一个 id，
+// 客户端会加载到旧的那份（这是「改了没生效」的根因）。
+const serverDir = join(homedir(), ".config", "opencode", "plugins", "superagent")
+for (const stale of ["tui.ts", "build.mjs", "dist", "src"]) {
+  await rm(join(serverDir, stale), { recursive: true, force: true })
+}
+
 // TUI 客户端只监视插件根目录的 index.ts，改 dist 不会触发重载。
 // 每次同步后改写这个标记，让客户端重新加载 TUI 部分。
 const tuiIndex = join(homedir(), ".opencode", "plugins", "superagent-tui", "index.ts")
