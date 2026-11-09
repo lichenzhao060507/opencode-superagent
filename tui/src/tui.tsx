@@ -134,6 +134,13 @@ function baseDir() {
   }
 }
 
+/** build.mjs 在产物顶部注入这个常量，用来在日志里区分「跑的是哪一版」。 */
+declare const BUILD_STAMP: string
+
+function buildStamp() {
+  return typeof BUILD_STAMP === "string" ? BUILD_STAMP : "no-stamp"
+}
+
 /**
  * 探针用同步写：异步 append 在插件报错退出时可能来不及落盘，
  * 会让「加载失败」和「没加载」看起来一模一样。
@@ -485,7 +492,7 @@ function Commands(props: { context: Ctx }) {
 export default Plugin.define({
   id: "superagent.tui",
   setup(context) {
-    probe("setup 进入")
+    probe(`setup 进入 build=${buildStamp()}`)
 
     let stopSidebar: (() => void) | undefined
     let stopCommands: (() => void) | undefined
@@ -664,4 +671,4 @@ async function editProfile(context: Ctx, name: string) {
 }
 
 // 模块级探针：能写出来就说明模块被求值了，比 setup 更早。
-probe("module 已求值")
+probe(`module 已求值 build=${buildStamp()}`)

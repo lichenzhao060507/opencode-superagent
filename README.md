@@ -148,7 +148,9 @@ superagent_task_dispatch({ title: "…", brief: "…", gate: "data" })
 
 `/sa` 面板上半是 agent 设定（逐项编辑提示词 / 记忆 / MCP / skill / 审查类型 / 说明书 / worker agent / 模型），下半是任务（选中跳到对应会话），最后一条是「＋ 新建 agent」。改完直接落盘 `profiles.json` 并重写 agent 定义，`@` 列表跟着变。
 
-**热重载不可靠。** TUI 客户端对插件目录的监视会失效——实测连改写 `index.ts` 都不触发重载，`scripts/sync.mjs` 末尾那句「执行 /reload 生效」只在监视器活着时成立。改完 TUI 后必须**完全退出所有 opencode 进程再开**；判断是否真的换了代码，看侧边栏表头版本号与 `~/.local/share/opencode/superagent/tui.log`。
+**热重载不可靠。** TUI 客户端对插件目录的监视会失效——实测连改写 `index.ts` 都不触发重载，`scripts/sync.mjs` 末尾那句「执行 /reload 生效」只在监视器活着时成立。改完 TUI 后必须**完全退出所有 opencode 进程再开**。
+
+判断实际跑的是哪一版，看 `~/.local/share/opencode/superagent/tui.log`：每次加载都会写 `module 已求值 build=<构建时间戳> [pid=…]`，时间戳由 `tui/build.mjs` 自动注入，不用手写版本号。日志里没有新行，就是模块根本没被求值。
 
 各插件在同一槽位里是兄弟节点，只能整体靠前或靠后，顺序取决于插件加载顺序。
 

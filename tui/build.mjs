@@ -86,6 +86,8 @@ const importBlock = [...modules.entries()]
 const bundle = [
   "// 由 tui/build.mjs 生成：agent-file 已内联，单文件、无相对 import。",
   importBlock,
+  // 构建戳：日志里靠它区分「跑的是哪一版」，不用手写版本号。
+  `const BUILD_STAMP = ${JSON.stringify(new Date().toISOString())};`,
   agentParts.rest.trim().replace(/^export /gm, ""),
   tuiParts.rest.trim(),
   "",

@@ -9,6 +9,8 @@ import { RGBA } from "@opentui/core";
 import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 
+const BUILD_STAMP = "2026-11-09T17:09:52.484Z";
+
 /**
  * agent 定义文件的生成规则。
  *
@@ -133,6 +135,12 @@ function baseDir() {
   } catch {
     return "";
   }
+}
+
+/** build.mjs 在产物顶部注入这个常量，用来在日志里区分「跑的是哪一版」。 */
+
+function buildStamp() {
+  return typeof BUILD_STAMP === "string" ? BUILD_STAMP : "no-stamp";
 }
 
 /**
@@ -584,7 +592,7 @@ function Commands(props) {
 export default Plugin.define({
   id: "superagent.tui",
   setup(context) {
-    probe("setup 进入");
+    probe(`setup 进入 build=${buildStamp()}`);
     let stopSidebar;
     let stopCommands;
     try {
@@ -797,5 +805,5 @@ async function editProfile(context, name) {
 }
 
 // 模块级探针：能写出来就说明模块被求值了，比 setup 更早。
-probe("module 已求值");
+probe(`module 已求值 build=${buildStamp()}`);
 
