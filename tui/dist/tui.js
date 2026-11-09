@@ -62,8 +62,17 @@ const MAX_ROWS = 3;
 /** 展开/收起是全局状态：命令和侧边栏读同一个信号。 */
 const [expanded, setExpanded] = createSignal(true);
 function probe(line) {
-  const where = `pid=${process.pid} argv=${(process.argv ?? []).slice(0, 2).join(" ")}`;
-  void appendFile(PROBE, `${new Date().toISOString()} [${where}] ${line}\n`).catch(() => {});
+  try {
+    let where = "no-process";
+    try {
+      if (typeof process !== "undefined" && process?.pid) where = `pid=${process.pid}`;
+    } catch {
+      where = "no-process";
+    }
+    void appendFile(PROBE, `${new Date().toISOString()} [${where}] ${line}\n`).catch(() => {});
+  } catch {
+    // 探针本身绝不能影响插件
+  }
 }
 function clip(text, max = 30) {
   const flat = String(text ?? "").replace(/\s+/g, " ").trim();
@@ -114,6 +123,13 @@ function stateMark(state) {
 function Sidebar() {
   const context = usePlugin();
   const [tasks, setTasks] = createSignal([]);
+  const fg = () => {
+    try {
+      return context.theme.text.base;
+    } catch {
+      return "#d0d0d0";
+    }
+  };
   const refresh = async () => setTasks(await readLedger());
   void refresh();
   const timer = setInterval(() => void refresh(), 4000);
@@ -140,7 +156,7 @@ function Sidebar() {
           children: task => (() => {
             var _el$3 = _$createElement("text");
             _$insert(_el$3, () => `  ${task.state === "running" ? "●" : "✗"} ${clip(task.title)}${task.state === "running" ? ` · ${task.minutes}m` : ""}`);
-            _$effect(_$p => _$setProp(_el$3, "fg", context.theme.text.base, _$p));
+            _$effect(_$p => _$setProp(_el$3, "fg", fg(), _$p));
             return _el$3;
           })()
         }), _$createComponent(Show, {
@@ -155,7 +171,7 @@ function Sidebar() {
               children: task => (() => {
                 var _el$4 = _$createElement("text");
                 _$insert(_el$4, () => `  ✓ ${clip(task.title)}`);
-                _$effect(_$p => _$setProp(_el$4, "fg", context.theme.text.base, _$p));
+                _$effect(_$p => _$setProp(_el$4, "fg", fg(), _$p));
                 return _el$4;
               })()
             });
@@ -163,35 +179,40 @@ function Sidebar() {
         })];
       }
     }), null);
-    _$effect(_$p => _$setProp(_el$2, "fg", context.theme.text.base, _$p));
+    _$effect(_$p => _$setProp(_el$2, "fg", fg(), _$p));
     return _el$;
   })();
 }
 export default Plugin.define({
   id: "superagent.tui",
   setup(context) {
-    probe("setup 进入");
     try {
-      context.ui.slot({
-        append: "sidebar.content",
-        render: () => _$createComponent(Sidebar, {})
-      });
-      probe("sidebar 槽位已注册");
-    } catch (error) {
-      probe(`sidebar 注册失败：${String(error)}`);
-    }
+      probe("setup 进入");
+      try {
+        context.ui.slot({
+          append: "sidebar.content",
+          render: () => _$createComponent(Sidebar, {})
+        });
+        probe("sidebar 槽位已注册");
+      } catch (error) {
+        probe(`sidebar 注册失败：${String(error)}`);
+      }
 
-    // keymap.layer 要读 Solid 上下文，必须在已挂载的组件里调用
-    try {
-      context.ui.slot({
-        append: "app",
-        render: () => {
-          registerCommands(context);
-          return null;
-        }
-      });
+      // keymap.layer 要读 Solid 上下文，必须在已挂载的组件里调用
+      try {
+        context.ui.slot({
+          append: "app",
+          render: () => {
+            registerCommands(context);
+            return null;
+          }
+        });
+      } catch (error) {
+        probe(`app 槽位注册失败：${String(error)}`);
+      }
     } catch (error) {
-      probe(`app 槽位注册失败：${String(error)}`);
+      // 插件的任何异常都不该把 TUI 拖下水
+      probe(`setup 失败：${String(error)}`);
     }
   }
 });

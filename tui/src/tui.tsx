@@ -53,8 +53,17 @@ const MAX_ROWS = 3
 const [expanded, setExpanded] = createSignal(true)
 
 function probe(line: string) {
-  const where = `pid=${process.pid} argv=${(process.argv ?? []).slice(0, 2).join(" ")}`
-  void appendFile(PROBE, `${new Date().toISOString()} [${where}] ${line}\n`).catch(() => {})
+  try {
+    let where = "no-process"
+    try {
+      if (typeof process !== "undefined" && process?.pid) where = `pid=${process.pid}`
+    } catch {
+      where = "no-process"
+    }
+    void appendFile(PROBE, `${new Date().toISOString()} [${where}] ${line}\n`).catch(() => {})
+  } catch {
+    // 探针本身绝不能影响插件
+  }
 }
 
 function clip(text: string, max = 30) {
@@ -110,6 +119,13 @@ function stateMark(state: string) {
 function Sidebar() {
   const context = usePlugin()
   const [tasks, setTasks] = createSignal<TaskRow[]>([])
+  const fg = () => {
+    try {
+      return context.theme.text.base
+    } catch {
+      return "#d0d0d0"
+    }
+  }
 
   const refresh = async () => setTasks(await readLedger())
   void refresh()
@@ -129,18 +145,18 @@ function Sidebar() {
 
   return (
     <box flexDirection="column">
-      <text fg={context.theme.text.base}>{head()}</text>
+      <text fg={fg()}>{head()}</text>
       <Show when={expanded()}>
         <For each={[...running(), ...failed()].slice(0, MAX_ROWS)}>
           {(task) => (
-            <text fg={context.theme.text.base}>
+            <text fg={fg()}>
               {`  ${task.state === "running" ? "●" : "✗"} ${clip(task.title)}${task.state === "running" ? ` · ${task.minutes}m` : ""}`}
             </text>
           )}
         </For>
         <Show when={running().length === 0 && failed().length === 0 && recent().length > 0}>
           <For each={recent()}>
-            {(task) => <text fg={context.theme.text.base}>{`  ✓ ${clip(task.title)}`}</text>}
+            {(task) => <text fg={fg()}>{`  ✓ ${clip(task.title)}`}</text>}
           </For>
         </Show>
       </Show>
@@ -151,26 +167,31 @@ function Sidebar() {
 export default Plugin.define({
   id: "superagent.tui",
   setup(context) {
-    probe("setup 进入")
-
     try {
-      context.ui.slot({ append: "sidebar.content", render: () => <Sidebar /> })
-      probe("sidebar 槽位已注册")
-    } catch (error) {
-      probe(`sidebar 注册失败：${String(error)}`)
-    }
+      probe("setup 进入")
 
-    // keymap.layer 要读 Solid 上下文，必须在已挂载的组件里调用
-    try {
-      context.ui.slot({
-        append: "app",
-        render: () => {
-          registerCommands(context)
-          return null
-        },
-      })
+      try {
+        context.ui.slot({ append: "sidebar.content", render: () => <Sidebar /> })
+        probe("sidebar 槽位已注册")
+      } catch (error) {
+        probe(`sidebar 注册失败：${String(error)}`)
+      }
+
+      // keymap.layer 要读 Solid 上下文，必须在已挂载的组件里调用
+      try {
+        context.ui.slot({
+          append: "app",
+          render: () => {
+            registerCommands(context)
+            return null
+          },
+        })
+      } catch (error) {
+        probe(`app 槽位注册失败：${String(error)}`)
+      }
     } catch (error) {
-      probe(`app 槽位注册失败：${String(error)}`)
+      // 插件的任何异常都不该把 TUI 拖下水
+      probe(`setup 失败：${String(error)}`)
     }
   },
 })
