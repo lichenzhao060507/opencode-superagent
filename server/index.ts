@@ -20,6 +20,40 @@ function ledgerPath() {
   return join(homedir(), ".local", "share", "opencode", "superagent", "tasks.json")
 }
 
+function profilesPath() {
+  return join(homedir(), ".local", "share", "opencode", "superagent", "profiles.json")
+}
+
+/** 一个 agent 的完整设定：派活时整套带进 worker 会话。 */
+interface Profile {
+  name: string
+  description?: string
+  agent?: string
+  model?: string
+  gate?: GateKind
+  prompt?: string
+  memory?: string
+  mcp?: string[]
+  skills?: string[]
+  updatedAt?: string
+}
+
+async function readProfiles(): Promise<Profile[]> {
+  try {
+    const raw = await readFile(profilesPath(), "utf8")
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? (parsed as Profile[]) : []
+  } catch {
+    return []
+  }
+}
+
+async function writeProfiles(profiles: Profile[]) {
+  const path = profilesPath()
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, JSON.stringify(profiles, null, 2), "utf8")
+}
+
 
 type TaskState = "running" | "done" | "failed" | "cancelled" | "stale"
 
@@ -54,6 +88,7 @@ interface TaskRecord {
   gateResult?: GateResult
   repairs?: number
   note?: string
+  profile?: Profile
 }
 
 function clamp(n: number, lo: number, hi: number) {
@@ -77,13 +112,24 @@ function oneLine(text: string, max: number) {
 }
 
 function workerPrompt(task: TaskRecord) {
+  const profile = task.profile
+  const extra: string[] = []
+  if (profile?.prompt) extra.push("", "## 这个 agent 的设定", profile.prompt)
+  if (profile?.memory) extra.push("", "## 长期记忆（每次派活都带上，可随时改）", profile.memory)
+  if (profile?.mcp?.length) {
+    extra.push("", "## 可用 MCP", `优先用这些：${profile.mcp.join("、")}。不要在无关的 MCP 上浪费时间。`)
+  }
+  if (profile?.skills?.length) {
+    extra.push("", "## 相关技能", `需要时加载这些 skill：${profile.skills.join("、")}。`)
+  }
   return [
-    "你是 worker。你只负责下面这一件事，全程不与用户对话。",
+    `你是 ${profile?.name ? `「${profile.name}」` : "worker"}。你只负责下面这一件事，全程不与用户对话。`,
     "",
     "## 任务",
     task.title,
     "",
     task.brief,
+    ...extra,
     "",
     "## 工作约定",
     "1. 动手前先读当前目录里的 AGENTS.md / HANDOFF.md（存在的话），按已有约定做事。",
@@ -104,7 +150,9 @@ function workerPrompt(task: TaskRecord) {
     "（需要人来定的问题，逐条列；没有就写「无」）",
     "",
     "写完后即可结束，不需要向任何人解释过程。",
-  ].join("\n")
+  ]
+    .filter((line) => line !== undefined)
+    .join("\n")
 }
 
 function inferGate(text: string): GateKind {
@@ -488,10 +536,12 @@ export default Plugin.define({
         await mkdir(join(task.directory, ".superagent", task.id), { recursive: true })
 
         const agent = task.agent ?? workerAgent
+        const model = parseModelRef(task.profile?.model)
         const created: any = await ctx.session.create({
           title: `[${task.id}] ${task.title}`,
           location: { directory: task.directory },
           ...(agent ? { agent } : {}),
+          ...(model ? { model } : {}),
           ...(denySubagent
             ? { permissions: [{ action: "subagent", resource: "*", effect: "deny" }] }
             : {}),
@@ -560,18 +610,34 @@ export default Plugin.define({
         typeof input?.directory === "string" ? input.directory : undefined,
         originDirectory,
       )
+
+      const profileName = typeof input?.profile === "string" ? input.profile.trim() : ""
+      let profile: Profile | undefined
+      if (profileName) {
+        profile = (await readProfiles()).find((item) => item.name === profileName)
+        if (!profile) {
+          return {
+            content: `没有名为「${profileName}」的 agent。先 superagent_profile_list 看看有哪些，或用 superagent_profile_save 新建。`,
+          }
+        }
+      }
+
       const requestedGate = typeof input?.gate === "string" ? input.gate.trim() : ""
       const gate: GateKind =
         requestedGate === "none" || requestedGate === "data" || requestedGate === "cite" || requestedGate === "text"
           ? (requestedGate as GateKind)
-          : inferGate(`${title} ${brief}`)
+          : (profile?.gate ?? inferGate(`${title} ${brief}`))
       const task: TaskRecord = {
         id,
         title,
         brief,
         directory,
         gate,
-        agent: typeof input?.agent === "string" && input.agent.trim() ? input.agent.trim() : undefined,
+        profile: profile ? { ...profile } : undefined,
+        agent:
+          typeof input?.agent === "string" && input.agent.trim()
+            ? input.agent.trim()
+            : (profile?.agent ?? undefined),
         originSessionID: toolCtx?.sessionID,
         resultPath: join(directory, ".superagent", id, "RESULT.md"),
         state: "running",
@@ -587,6 +653,7 @@ export default Plugin.define({
       return {
         content: [
           `已派发 ${id}：${title}`,
+          profile ? `agent 设定：${profile.name}` : "agent 设定：默认",
           `目录：${directory}`,
           gateOn && gate !== "none" ? `完成后过审查：${reviewerFor(gate)}` : "审查：跳过",
           "它在独立会话里跑（默认不打扰你），完成后会有一条摘要回到本会话。",
@@ -637,8 +704,120 @@ export default Plugin.define({
       return { content: `已取消 ${id}。` }
     }
 
+    const profileList = async () => {
+      const profiles = await readProfiles()
+      if (profiles.length === 0) {
+        return {
+          content: [
+            "还没有 agent。用 superagent_profile_save 新建一个：",
+            `superagent_profile_save({ name: "文献综述", gate: "cite", prompt: "…", skills: ["lit-review"], mcp: ["zotero"] })`,
+            `存放位置：${profilesPath()}`,
+          ].join("\n"),
+        }
+      }
+      const lines = profiles.map((item) => {
+        const bits = [`gate=${item.gate ?? "auto"}`]
+        if (item.agent) bits.push(`agent=${item.agent}`)
+        if (item.model) bits.push(`model=${item.model}`)
+        if (item.mcp?.length) bits.push(`mcp=${item.mcp.join(",")}`)
+        if (item.skills?.length) bits.push(`skills=${item.skills.join(",")}`)
+        return `${item.name}  ·  ${bits.join(" · ")}${item.description ? `\n    ${item.description}` : ""}`
+      })
+      return { content: [`共 ${profiles.length} 个 agent：`, ...lines].join("\n") }
+    }
+
+    const profileSave = async (input: any) => {
+      const name = String(input?.name ?? "").trim()
+      if (!name) return { content: "需要 name。" }
+      const profiles = await readProfiles()
+      const index = profiles.findIndex((item) => item.name === name)
+      const before = index >= 0 ? profiles[index] : ({ name } as Profile)
+
+      const pick = (field: string) => (input && Object.prototype.hasOwnProperty.call(input, field) ? input[field] : undefined)
+      const next: Profile = { ...before }
+      const description = pick("description")
+      if (typeof description === "string") next.description = description
+      const agent = pick("agent")
+      if (typeof agent === "string") next.agent = agent
+      const model = pick("model")
+      if (typeof model === "string") next.model = model
+      const gate = pick("gate")
+      if (gate === "data" || gate === "cite" || gate === "text" || gate === "none") next.gate = gate
+      const prompt = pick("prompt")
+      if (typeof prompt === "string") next.prompt = prompt
+      const memory = pick("memory")
+      if (typeof memory === "string") next.memory = memory
+      const mcp = pick("mcp")
+      if (Array.isArray(mcp)) next.mcp = mcp.filter((item: unknown) => typeof item === "string") as string[]
+      const skills = pick("skills")
+      if (Array.isArray(skills)) next.skills = skills.filter((item: unknown) => typeof item === "string") as string[]
+      next.updatedAt = new Date().toISOString()
+
+      if (index >= 0) profiles[index] = next
+      else profiles.push(next)
+      await writeProfiles(profiles)
+      return {
+        content: `${index >= 0 ? "已更新" : "已新建"} agent「${name}」。\n派活时传 profile: "${name}" 就会带上这套设定。`,
+      }
+    }
+
+    const profileRemove = async (input: any) => {
+      const name = String(input?.name ?? "").trim()
+      if (!name) return { content: "需要 name。" }
+      const profiles = await readProfiles()
+      const remaining = profiles.filter((item) => item.name !== name)
+      if (remaining.length === profiles.length) return { content: `没有名为「${name}」的 agent。` }
+      await writeProfiles(remaining)
+      return { content: `已删除 agent「${name}」。` }
+    }
+
     await ctx.tool.transform((editor) => {
       editor.namespace({ name: "superagent", description: "Router + Worker：把任务派给独立会话执行，完成后只回一条摘要" })
+
+      editor.add({
+        name: "profile_list",
+        description: "列出所有可复用的 agent 设定（prompt / 记忆 / MCP / skill / gate）。",
+        input: { type: "object", properties: {}, additionalProperties: false },
+        options: { namespace: "superagent", codemode: true },
+        execute: profileList,
+      })
+
+      editor.add({
+        name: "profile_save",
+        description:
+          "新建或更新一个 agent 设定。只传要改的字段，未传的保持原样。设定会整套带进 worker 会话。",
+        input: {
+          type: "object",
+          properties: {
+            name: { type: "string", description: "agent 名字，派活时用 profile 引用" },
+            description: { type: "string", description: "一句话说明它是干什么的" },
+            agent: { type: "string", description: "worker 使用的 OpenCode agent 名" },
+            model: { type: "string", description: "模型，格式 provider/model，如 deepseek/deepseek-flash" },
+            gate: { type: "string", enum: ["data", "cite", "text", "none"], description: "默认审查类型" },
+            prompt: { type: "string", description: "角色设定与做事要求" },
+            memory: { type: "string", description: "长期记忆/背景事实，每次派活都带上" },
+            mcp: { type: "array", items: { type: "string" }, description: "优先使用的 MCP 名称" },
+            skills: { type: "array", items: { type: "string" }, description: "需要时加载的 skill 名" },
+          },
+          required: ["name"],
+          additionalProperties: false,
+        },
+        options: { namespace: "superagent", codemode: true },
+        execute: profileSave,
+      })
+
+      editor.add({
+        name: "profile_remove",
+        description: "删除一个 agent 设定。",
+        input: {
+          type: "object",
+          properties: { name: { type: "string" } },
+          required: ["name"],
+          additionalProperties: false,
+        },
+        options: { namespace: "superagent", codemode: true },
+        execute: profileRemove,
+      })
 
       editor.add({
         name: "task_dispatch",
@@ -651,6 +830,7 @@ export default Plugin.define({
             brief: { type: "string", description: "自包含的任务说明：目标、范围、验收标准、已知约束" },
             directory: { type: "string", description: "任务目录（相对当前目录或绝对路径），默认当前目录" },
             agent: { type: "string", description: "可选：指定 worker 使用的 agent 名" },
+            profile: { type: "string", description: "可选：使用哪个 agent 设定（prompt/记忆/MCP/skill/gate 一起带上）" },
             gate: {
               type: "string",
               enum: ["data", "cite", "text", "none"],

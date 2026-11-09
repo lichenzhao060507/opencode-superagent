@@ -30,6 +30,36 @@ node scripts/sync.mjs  # 复制到两个插件目录
 
 装完 `/reload`。
 
+## Agent 设定（profiles）
+
+把「提示词 / 记忆 / 用哪些 MCP / 用哪些 skill / 默认审查类型」打包成一个可复用的 agent，派活时按名字引用。
+
+存放位置：`~/.local/share/opencode/superagent/profiles.json`（TUI 和命令行都能改）。
+
+```
+superagent_profile_save({
+  name: "文献综述",
+  description: "读文献、整理引用、写综述骨架",
+  gate: "cite",
+  agent: "build",
+  model: "deepseek/deepseek-flash",
+  prompt: "你负责文献工作：先读再写，引用必须可核实。",
+  memory: "文献笔记在 Obsidian；不臆造 DOI。",
+  mcp: ["zotero", "obsidian"],
+  skills: ["lit-review"]
+})
+```
+
+派活时：
+
+```
+superagent_task_dispatch({ title, brief, profile: "文献综述" })
+```
+
+设定会整套带进 worker 会话——prompt、记忆、MCP 偏好、skill 列表全部进任务说明，`gate` 成为默认审查类型。
+
+**边界**：`mcp` 和 `skills` 是**指令级**约束（写进任务说明让 worker 优先使用），不是沙箱级的工具隔离——OpenCode 目前没有按会话禁用某几个 MCP 工具的接口。真正硬隔离只有 `denySubagent` 这一条（用 permissions 实现）。
+
 ## 工具
 
 | 工具 | 作用 |
