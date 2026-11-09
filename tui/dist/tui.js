@@ -1,10 +1,11 @@
 // 由 tui/build.mjs 生成：agent-file 已内联，单文件、无相对 import。
 
-import { mkdir, writeFile, appendFile, readFile, rm } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { effect as _$effect, insertNode as _$insertNode, memo as _$memo, createComponent as _$createComponent, insert as _$insert, setProp as _$setProp, createElement as _$createElement } from "@opentui/solid";
-import { Plugin, usePlugin } from "@opencode/plugin/tui";
+import { insertNode as _$insertNode, effect as _$effect, memo as _$memo, createComponent as _$createComponent, insert as _$insert, setProp as _$setProp, createElement as _$createElement } from "@opentui/solid";
+import { Plugin } from "@opencode/plugin/tui";
 import { For, Show, createSignal, onCleanup } from "solid-js";
+import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 
 /**
@@ -41,9 +42,14 @@ async function writeAgentFile(profile, baseDir) {
 /**
  * superagent 的 TUI 部分。
  *
- * 两件事：
- * 1. 侧边栏显示任务账本（可折叠，折叠状态记在 memory storage 里）。
+ * 三件事：
+ * 1. 侧边栏显示任务账本（可折叠，折叠状态由模块内信号共享）。
  * 2. /sa 面板：看任务、跳到对应会话、直接编辑 agent 设定的提示词/记忆/MCP/skill。
+ * 3. /saf：收起或展开侧边栏。
+ *
+ * 上下文一律用 prop 传进组件，不在组件里调 usePlugin()：
+ * 槽位内容由宿主的 X0 错误边界渲染，不保证包在 PluginContextProvider 内，
+ * usePlugin() 拿不到 context 会抛 "PluginContextProvider is missing"。
  *
  * 数据来源是服务端写的镜像文件（TUI 是另一个进程，读不到插件 storage）：
  *   ~/.local/share/opencode/superagent/tasks.json
@@ -51,63 +57,105 @@ async function writeAgentFile(profile, baseDir) {
  * 编辑 agent 时同时改写 OpenCode 的 agent 定义，@ 列表才会跟着变。
  */
 
-const BASE = join(homedir(), ".local", "share", "opencode", "superagent");
-const LEDGER = join(BASE, "tasks.json");
-const PROFILES = join(BASE, "profiles.json");
-const PROBE = join(BASE, "tui.log");
-const AGENTS_DIR = join(homedir(), ".config", "opencode", "agents");
 const RECENT_FAILURE_MS = 10 * 60_000;
 const MAX_ROWS = 3;
 
 /** 展开/收起是全局状态：命令和侧边栏读同一个信号。 */
 const [expanded, setExpanded] = createSignal(true);
+function pidText() {
+  try {
+    if (typeof process !== "undefined" && process?.pid) return `pid=${process.pid}`;
+  } catch {
+    // TUI 沙箱里可能没有 process
+  }
+  return "no-process";
+}
+function baseDir() {
+  try {
+    const home = homedir();
+    return home ? join(home, ".local", "share", "opencode", "superagent") : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 探针用同步写：异步 append 在插件报错退出时可能来不及落盘，
+ * 会让「加载失败」和「没加载」看起来一模一样。
+ */
 function probe(line) {
   try {
-    let where = "no-process";
-    try {
-      if (typeof process !== "undefined" && process?.pid) where = `pid=${process.pid}`;
-    } catch {
-      where = "no-process";
-    }
-    void appendFile(PROBE, `${new Date().toISOString()} [${where}] ${line}\n`).catch(() => {});
+    const base = baseDir();
+    if (!base) return;
+    mkdirSync(base, {
+      recursive: true
+    });
+    appendFileSync(join(base, "tui.log"), `${new Date().toISOString()} [${pidText()}] ${line}\n`, "utf8");
   } catch {
     // 探针本身绝不能影响插件
+  }
+}
+function ledgerPath() {
+  const base = baseDir();
+  return base ? join(base, "tasks.json") : "";
+}
+function profilesPath() {
+  const base = baseDir();
+  return base ? join(base, "profiles.json") : "";
+}
+function agentsDir() {
+  try {
+    const home = homedir();
+    return home ? join(home, ".config", "opencode", "agents") : "";
+  } catch {
+    return "";
   }
 }
 function clip(text, max = 30) {
   const flat = String(text ?? "").replace(/\s+/g, " ").trim();
   return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
 }
-async function readJson(path, fallback) {
+function readJson(path, fallback) {
+  if (!path) return fallback;
   try {
-    return JSON.parse(await readFile(path, "utf8"));
+    return JSON.parse(readFileSync(path, "utf8"));
   } catch {
     return fallback;
   }
 }
-async function readLedger() {
-  const snapshot = await readJson(LEDGER, {});
+function readLedger() {
+  const snapshot = readJson(ledgerPath(), {});
   return Array.isArray(snapshot.tasks) ? snapshot.tasks : [];
 }
-async function readProfiles() {
-  const list = await readJson(PROFILES, []);
+function readProfiles() {
+  const list = readJson(profilesPath(), []);
   return Array.isArray(list) ? list : [];
 }
-async function saveProfiles(profiles) {
-  await mkdir(dirname(PROFILES), {
+function saveProfiles(profiles) {
+  const path = profilesPath();
+  if (!path) throw new Error("找不到数据目录");
+  mkdirSync(dirname(path), {
     recursive: true
   });
-  await writeFile(PROFILES, JSON.stringify(profiles, null, 2), "utf8");
+  writeFileSync(path, JSON.stringify(profiles, null, 2), "utf8");
 }
 
 /** 规则与 server/index.ts 的 writeAgentFile 一致，实现共用 src/agent-file.ts。 */
 function saveAgentFile(profile) {
-  return writeAgentFile(profile, AGENTS_DIR);
+  const dir = agentsDir();
+  if (!dir) throw new Error("找不到 agents 目录");
+  return writeAgentFile(profile, dir);
 }
-async function removeAgentFile(name) {
-  await rm(join(AGENTS_DIR, `${agentSlug(name)}.md`), {
-    force: true
-  }).catch(() => {});
+function removeAgentFile(name) {
+  const dir = agentsDir();
+  if (!dir) return;
+  try {
+    rmSync(join(dir, `${agentSlug(name)}.md`), {
+      force: true
+    });
+  } catch {
+    // 删不掉就算了，不影响主流程
+  }
 }
 function isRecentFailure(task) {
   if (task.state !== "failed" && task.state !== "stale") return false;
@@ -120,24 +168,42 @@ function stateMark(state) {
   if (state === "cancelled") return "■";
   return "✗";
 }
-function Sidebar() {
-  const context = usePlugin();
+
+/** 主题叶名两版并存：2.0.7 是 text.default/subdued，新版本是 text.base/muted。 */
+function readColors(context) {
+  try {
+    const text = context.theme.text;
+    return {
+      fg: text.base ?? text.default,
+      muted: text.muted ?? text.subdued
+    };
+  } catch {
+    return {
+      fg: undefined,
+      muted: undefined
+    };
+  }
+}
+function Sidebar(props) {
+  const colors = () => readColors(props.context);
   const [tasks, setTasks] = createSignal([]);
-  const fg = () => {
-    try {
-      return context.theme.text.base;
-    } catch {
-      return "#d0d0d0";
-    }
+  const [agents, setAgents] = createSignal(0);
+  const refresh = () => {
+    setTasks(readLedger());
+    setAgents(readProfiles().length);
   };
-  const refresh = async () => setTasks(await readLedger());
-  void refresh();
-  const timer = setInterval(() => void refresh(), 4000);
+  refresh();
+  const timer = setInterval(refresh, 4000);
   onCleanup(() => clearInterval(timer));
   const running = () => tasks().filter(task => task.state === "running");
   const failed = () => tasks().filter(isRecentFailure);
   const recent = () => tasks().filter(task => task.state === "done" || task.state === "cancelled").slice(0, 2);
-  const head = () => running().length > 0 ? `${expanded() ? "▾" : "▸"} Superagent v4 · ${running().length} 个运行中` : failed().length > 0 ? `${expanded() ? "▾" : "▸"} Superagent v4 · ${failed().length} 个待处理` : `${expanded() ? "▾" : "▸"} Superagent v4 · 空闲`;
+  const head = () => {
+    const mark = expanded() ? "▾" : "▸";
+    if (running().length > 0) return `${mark} Superagent v5 · ${running().length} 个运行中`;
+    if (failed().length > 0) return `${mark} Superagent v5 · ${failed().length} 个待处理`;
+    return `${mark} Superagent v5 · 空闲`;
+  };
   return (() => {
     var _el$ = _$createElement("box"),
       _el$2 = _$createElement("text");
@@ -154,10 +220,10 @@ function Sidebar() {
             return [...running(), ...failed()].slice(0, MAX_ROWS);
           },
           children: task => (() => {
-            var _el$3 = _$createElement("text");
-            _$insert(_el$3, () => `  ${task.state === "running" ? "●" : "✗"} ${clip(task.title)}${task.state === "running" ? ` · ${task.minutes}m` : ""}`);
-            _$effect(_$p => _$setProp(_el$3, "fg", fg(), _$p));
-            return _el$3;
+            var _el$4 = _$createElement("text");
+            _$insert(_el$4, () => `  ${task.state === "running" ? "●" : "✗"} ${clip(task.title)}${task.state === "running" ? ` · ${task.minutes}m` : ""}`);
+            _$effect(_$p => _$setProp(_el$4, "fg", colors().fg, _$p));
+            return _el$4;
           })()
         }), _$createComponent(Show, {
           get when() {
@@ -169,55 +235,37 @@ function Sidebar() {
                 return recent();
               },
               children: task => (() => {
-                var _el$4 = _$createElement("text");
-                _$insert(_el$4, () => `  ✓ ${clip(task.title)}`);
-                _$effect(_$p => _$setProp(_el$4, "fg", fg(), _$p));
-                return _el$4;
+                var _el$5 = _$createElement("text");
+                _$insert(_el$5, () => `  ✓ ${clip(task.title)}`);
+                _$effect(_$p => _$setProp(_el$5, "fg", colors().fg, _$p));
+                return _el$5;
               })()
             });
+          }
+        }), _$createComponent(Show, {
+          get when() {
+            return agents() > 0;
+          },
+          get children() {
+            var _el$3 = _$createElement("text");
+            _$insert(_el$3, () => `  ${agents()} 个 agent · /sa 编辑`);
+            _$effect(_$p => _$setProp(_el$3, "fg", colors().muted, _$p));
+            return _el$3;
           }
         })];
       }
     }), null);
-    _$effect(_$p => _$setProp(_el$2, "fg", fg(), _$p));
+    _$effect(_$p => _$setProp(_el$2, "fg", colors().fg, _$p));
     return _el$;
   })();
 }
-export default Plugin.define({
-  id: "superagent.tui",
-  setup(context) {
-    try {
-      probe("setup 进入");
-      try {
-        context.ui.slot({
-          append: "sidebar.content",
-          render: () => _$createComponent(Sidebar, {})
-        });
-        probe("sidebar 槽位已注册");
-      } catch (error) {
-        probe(`sidebar 注册失败：${String(error)}`);
-      }
 
-      // keymap.layer 要读 Solid 上下文，必须在已挂载的组件里调用
-      try {
-        context.ui.slot({
-          append: "app",
-          render: () => {
-            registerCommands(context);
-            return null;
-          }
-        });
-      } catch (error) {
-        probe(`app 槽位注册失败：${String(error)}`);
-      }
-    } catch (error) {
-      // 插件的任何异常都不该把 TUI 拖下水
-      probe(`setup 失败：${String(error)}`);
-    }
-  }
-});
-function registerCommands(context) {
-  context.keymap.layer(() => ({
+/**
+ * 命令层必须在已挂载的组件里注册（keymap.layer 要读 Solid 上下文），
+ * 且不能从槽位 render 里返回 null——宿主会把它当空子树插入。
+ */
+function Commands(props) {
+  props.context.keymap.layer(() => ({
     mode: "global",
     commands: [{
       id: "superagent.panel",
@@ -227,7 +275,7 @@ function registerCommands(context) {
       slash: {
         name: "sa"
       },
-      run: () => void openPanel(context)
+      run: () => void openPanel(props.context)
     }, {
       id: "superagent.fold",
       title: "Superagent：收起/展开侧边栏",
@@ -239,11 +287,59 @@ function registerCommands(context) {
       run: () => setExpanded(!expanded())
     }]
   }));
+  return (() => {
+    var _el$6 = _$createElement("box");
+    _$setProp(_el$6, "flexDirection", "column");
+    return _el$6;
+  })();
 }
+export default Plugin.define({
+  id: "superagent.tui",
+  setup(context) {
+    probe("setup 进入");
+    let stopSidebar;
+    let stopCommands;
+    try {
+      stopSidebar = context.ui.slot({
+        append: "sidebar.content",
+        render: () => _$createComponent(Sidebar, {
+          context: context
+        })
+      });
+      probe("sidebar 槽位已注册");
+    } catch (error) {
+      probe(`sidebar 注册失败：${String(error)}`);
+    }
+    try {
+      stopCommands = context.ui.slot({
+        append: "app",
+        render: () => _$createComponent(Commands, {
+          context: context
+        })
+      });
+      probe("app 槽位已注册");
+    } catch (error) {
+      probe(`app 注册失败：${String(error)}`);
+    }
+    return () => {
+      try {
+        stopSidebar?.();
+      } catch {
+        // 卸载失败不该抛出
+      }
+      try {
+        stopCommands?.();
+      } catch {
+        // 同上
+      }
+    };
+  }
+});
 async function openPanel(context) {
   probe("/sa 触发");
   try {
-    const [tasks, profiles] = await Promise.all([readLedger(), readProfiles()]);
+    const tasks = readLedger();
+    const profiles = readProfiles();
     probe(`/sa 任务 ${tasks.length} 条，agent ${profiles.length} 个`);
     const options = [...profiles.map(profile => ({
       title: `✎ ${profile.name}`,
@@ -272,15 +368,15 @@ async function openPanel(context) {
         title: "新建 agent",
         placeholder: "例如：数据核对"
       });
-      if (!name) return;
-      const profilesNext = [...profiles, {
-        name: name.trim()
-      }];
-      await saveProfiles(profilesNext);
+      if (!name || !name.trim()) return;
+      const clean = name.trim();
+      await saveProfiles([...profiles, {
+        name: clean
+      }]);
       await saveAgentFile({
-        name: name.trim()
+        name: clean
       });
-      await editProfile(context, name.trim());
+      await editProfile(context, clean);
       return;
     }
     if (picked.startsWith("profile:")) {
@@ -304,7 +400,7 @@ async function openPanel(context) {
   }
 }
 async function editProfile(context, name) {
-  const profiles = await readProfiles();
+  const profiles = readProfiles();
   const profile = profiles.find(item => item.name === name);
   if (!profile) {
     context.ui.toast.show({
@@ -384,4 +480,7 @@ async function editProfile(context, name) {
     variant: "success"
   });
 }
+
+// 模块级探针：能写出来就说明模块被求值了，比 setup 更早。
+probe("module 已求值");
 
