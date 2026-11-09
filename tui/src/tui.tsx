@@ -53,7 +53,8 @@ const MAX_ROWS = 3
 const [expanded, setExpanded] = createSignal(true)
 
 function probe(line: string) {
-  void appendFile(PROBE, `${new Date().toISOString()} ${line}\n`).catch(() => {})
+  const where = `pid=${process.pid} argv=${(process.argv ?? []).slice(0, 2).join(" ")}`
+  void appendFile(PROBE, `${new Date().toISOString()} [${where}] ${line}\n`).catch(() => {})
 }
 
 function clip(text: string, max = 30) {
@@ -121,10 +122,10 @@ function Sidebar() {
 
   const head = () =>
     running().length > 0
-      ? `${expanded() ? "▾" : "▸"} Superagent · ${running().length} 个运行中`
+      ? `${expanded() ? "▾" : "▸"} Superagent v4 · ${running().length} 个运行中`
       : failed().length > 0
-        ? `${expanded() ? "▾" : "▸"} Superagent · ${failed().length} 个待处理`
-        : `${expanded() ? "▾" : "▸"} Superagent · 空闲`
+        ? `${expanded() ? "▾" : "▸"} Superagent v4 · ${failed().length} 个待处理`
+        : `${expanded() ? "▾" : "▸"} Superagent v4 · 空闲`
 
   return (
     <box flexDirection="column">

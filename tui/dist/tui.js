@@ -37,7 +37,8 @@ const MAX_ROWS = 3;
 /** 展开/收起是全局状态：命令和侧边栏读同一个信号。 */
 const [expanded, setExpanded] = createSignal(true);
 function probe(line) {
-  void appendFile(PROBE, `${new Date().toISOString()} ${line}\n`).catch(() => {});
+  const where = `pid=${process.pid} argv=${(process.argv ?? []).slice(0, 2).join(" ")}`;
+  void appendFile(PROBE, `${new Date().toISOString()} [${where}] ${line}\n`).catch(() => {});
 }
 function clip(text, max = 30) {
   const flat = String(text ?? "").replace(/\s+/g, " ").trim();
@@ -95,7 +96,7 @@ function Sidebar() {
   const running = () => tasks().filter(task => task.state === "running");
   const failed = () => tasks().filter(isRecentFailure);
   const recent = () => tasks().filter(task => task.state === "done" || task.state === "cancelled").slice(0, 2);
-  const head = () => running().length > 0 ? `${expanded() ? "▾" : "▸"} Superagent · ${running().length} 个运行中` : failed().length > 0 ? `${expanded() ? "▾" : "▸"} Superagent · ${failed().length} 个待处理` : `${expanded() ? "▾" : "▸"} Superagent · 空闲`;
+  const head = () => running().length > 0 ? `${expanded() ? "▾" : "▸"} Superagent v4 · ${running().length} 个运行中` : failed().length > 0 ? `${expanded() ? "▾" : "▸"} Superagent v4 · ${failed().length} 个待处理` : `${expanded() ? "▾" : "▸"} Superagent v4 · 空闲`;
   return (() => {
     var _el$ = _$createElement("box"),
       _el$2 = _$createElement("text");
