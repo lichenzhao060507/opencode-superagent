@@ -58,15 +58,49 @@ superagent_task_dispatch({ title, brief, profile: "文献综述" })
 
 设定会整套带进 worker 会话——prompt、记忆、MCP 偏好、skill 列表全部进任务说明，`gate` 成为默认审查类型。
 
-**边界**：`mcp` 和 `skills` 是**指令级**约束（写进任务说明让 worker 优先使用），不是沙箱级的工具隔离——OpenCode 目前没有按会话禁用某几个 MCP 工具的接口。真正硬隔离只有 `denySubagent` 这一条（用 permissions 实现）。
+**同时会写一份 OpenCode agent 定义**到 `~/.config/opencode/agents/<名字>.md`（`mode: all`），所以它直接出现在 `@` 列表里：
+
+```
+@文献综述 帮我看看这三篇的引用有没有对不上的
+```
+
+派活时如果不指定 `agent`，默认用这个 agent 定义；定义文件还没被 OpenCode 发现时自动退回默认 agent，并在账本里记一条备注。
+
+**边界**：`mcp` 和 `skills` 是**指令级**约束（写进 system prompt 让 worker 优先使用），不是沙箱级的工具隔离——OpenCode 没有"按会话禁用某几个 MCP 工具"的接口。真正硬隔离的只有 `denySubagent`（用 permissions 实现）。
 
 ## 工具
 
 | 工具 | 作用 |
 |---|---|
+| `superagent_plan` | 给一句想法，拆成标题 / 自包含说明 / 建议 agent / 审查类型 / 验收点，并给出可直接调用的 dispatch |
 | `superagent_task_dispatch` | 派活，立即返回任务 id |
 | `superagent_task_status` | 看账本 |
 | `superagent_task_cancel` | 中断并记账 |
+| `superagent_profile_save` | 新建/更新一个 agent 设定，同时写出 agent 定义文件 |
+| `superagent_profile_list` | 列出所有 agent |
+| `superagent_profile_remove` | 删除 agent 及定义文件 |
+
+## 想法 → 任务
+
+```
+superagent_plan({ idea: "想比较两种口径的能耗强度，看结论会不会翻转" })
+```
+
+返回：
+
+```
+建议任务：2609项目能耗强度口径对比
+目标：… 范围：… 验收：… 约束：…
+验收点：
+- 确认两种口径定义及数据字段映射
+- …
+确认后这样派：
+superagent_task_dispatch({ title: "…", brief: "…", gate: "data" })
+```
+
+只给建议，不自动派发。用的是 `ctx.experimental.generate.text`，模型由 `planModel` 控制（默认 `deepseek/deepseek-flash`）。
+
+## 工具
 
 ## 一次派活发生了什么
 
@@ -90,8 +124,9 @@ superagent_task_dispatch({ title, brief, profile: "文献综述" })
 
 ## TUI
 
-- 侧边栏 `sidebar.content`，在 MCP 面板和 Tavily 配额之间：常驻 `⚙ Superagent · 空闲 / N 个运行中 / N 个待处理`，运行中列标题与耗时，空闲时列最近两条已完成。
-- `/sa` 打开任务列表，选中跳到对应 worker 会话。
+- 侧边栏 `sidebar.content`，在 MCP 面板和 Tavily 配额之间：`▾ Superagent · 空闲 / N 个运行中 / N 个待处理`，展开时列运行中任务与最近两条已完成。
+- `/saf`：收起 / 展开侧边栏。
+- `/sa`：打开面板——上半是 agent 设定（选中逐项编辑提示词 / 记忆 / MCP / skill / 审查类型 / 说明书 / worker agent / 模型），下半是任务（选中跳到对应会话），最后一条是「＋ 新建 agent」。改完直接落盘 `profiles.json` 并重写 agent 定义，`@` 列表跟着变。
 - 各插件在同一槽位里是兄弟节点，只能整体靠前或靠后，顺序取决于插件加载顺序。
 
 ## 配置

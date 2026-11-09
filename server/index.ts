@@ -1,5 +1,5 @@
 import { Plugin } from "@opencode/plugin"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 
@@ -52,6 +52,58 @@ async function writeProfiles(profiles: Profile[]) {
   const path = profilesPath()
   await mkdir(dirname(path), { recursive: true })
   await writeFile(path, JSON.stringify(profiles, null, 2), "utf8")
+}
+
+/** agent ID 就是文件名；去掉文件系统不认的字符，中文保留。 */
+function agentSlug(name: string) {
+  return name.trim().replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, "-")
+}
+
+function agentsDir() {
+  return join(homedir(), ".config", "opencode", "agents")
+}
+
+function agentFilePath(name: string) {
+  return join(agentsDir(), `${agentSlug(name)}.md`)
+}
+
+/**
+ * 把 agent 设定同步成 OpenCode 的 agent 定义文件，
+ * 这样它才会出现在 @ 列表里，也能被 task_dispatch 直接指定。
+ */
+async function writeAgentFile(profile: Profile) {
+  const body = [
+    profile.prompt ?? "",
+    profile.memory ? `## 长期记忆\n${profile.memory}` : "",
+    profile.mcp?.length ? `## 可用 MCP\n优先使用：${profile.mcp.join("、")}。` : "",
+    profile.skills?.length ? `## 相关技能\n需要时加载：${profile.skills.join("、")}。` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n")
+
+  const front = [
+    "---",
+    `description: ${JSON.stringify(profile.description ?? profile.name)}`,
+    "mode: all",
+    ...(profile.model ? [`model: ${profile.model}`] : []),
+    "---",
+    "",
+    body || profile.name,
+    "",
+  ].join("\n")
+
+  const path = agentFilePath(profile.name)
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, front, "utf8")
+  return path
+}
+
+async function removeAgentFile(name: string) {
+  try {
+    await rm(agentFilePath(name), { force: true })
+  } catch {
+    // 文件不存在就算了
+  }
 }
 
 
@@ -537,15 +589,26 @@ export default Plugin.define({
 
         const agent = task.agent ?? workerAgent
         const model = parseModelRef(task.profile?.model)
-        const created: any = await ctx.session.create({
-          title: `[${task.id}] ${task.title}`,
-          location: { directory: task.directory },
-          ...(agent ? { agent } : {}),
-          ...(model ? { model } : {}),
-          ...(denySubagent
-            ? { permissions: [{ action: "subagent", resource: "*", effect: "deny" }] }
-            : {}),
-        } as any)
+        const createSession = async (agentID?: string) =>
+          (await ctx.session.create({
+            title: `[${task.id}] ${task.title}`,
+            location: { directory: task.directory },
+            ...(agentID ? { agent: agentID } : {}),
+            ...(model ? { model } : {}),
+            ...(denySubagent
+              ? { permissions: [{ action: "subagent", resource: "*", effect: "deny" }] }
+              : {}),
+          } as any)) as any
+
+        let created: any
+        try {
+          created = await createSession(agent)
+        } catch (err) {
+          // agent 定义文件可能还没被 OpenCode 发现，退回默认 agent
+          if (!agent) throw err
+          task.note = `agent「${agent}」不可用，已退回默认（${err instanceof Error ? err.message : String(err)}）`
+          created = await createSession(undefined)
+        }
         sid = sessionIDOf(created)
         if (!sid) throw new Error("会话创建失败：没有返回会话 ID")
         task.sessionID = sid
@@ -637,7 +700,7 @@ export default Plugin.define({
         agent:
           typeof input?.agent === "string" && input.agent.trim()
             ? input.agent.trim()
-            : (profile?.agent ?? undefined),
+            : (profile?.agent ?? (profile ? agentSlug(profile.name) : undefined)),
         originSessionID: toolCtx?.sessionID,
         resultPath: join(directory, ".superagent", id, "RESULT.md"),
         state: "running",
@@ -704,6 +767,82 @@ export default Plugin.define({
       return { content: `已取消 ${id}。` }
     }
 
+    const plan = async (input: any) => {
+      const idea = String(input?.idea ?? "").trim()
+      if (!idea) return { content: "需要 idea：一句你脑子里的想法就行。" }
+
+      const profiles = await readProfiles()
+      const profileList = profiles.length
+        ? profiles.map((item) => `- ${item.name}：${item.description ?? "（无说明）"}`).join("\n")
+        : "（还没有设定，可省略 profile）"
+
+      const model = parseModelRef(options.planModel ?? "deepseek/deepseek-flash")
+      const prompt = [
+        "把一个模糊的研究/工程想法拆成一条可派发的任务。只输出 JSON，不要解释。",
+        "字段：title（不超过 20 字）、brief（自包含：目标、范围、验收标准、已知约束，200 字以内）、",
+        "profile（从下面选一个名字，没有合适的就空字符串）、gate（data|cite|text|none）、",
+        "checklist（3-5 条可勾选的验收点）。",
+        "",
+        "已有 agent 设定：",
+        profileList,
+        "",
+        `想法：${idea}`,
+      ].join("\n")
+
+      let raw = ""
+      try {
+        if (!model) throw new Error("没有可用模型")
+        const result: any = await ctx.experimental.generate.text({ model, prompt } as any)
+        raw =
+          typeof result === "string"
+            ? result
+            : typeof result?.text === "string"
+              ? result.text
+              : typeof result?.content === "string"
+                ? result.content
+                : JSON.stringify(result ?? "")
+      } catch (err: any) {
+        return {
+          content: [
+            "拆解失败，先给你一个手写模板：",
+            `title：${idea.slice(0, 20)}`,
+            "brief：（目标 / 范围 / 验收标准 / 已知约束）",
+            `原因：${err?.message ?? err}`,
+          ].join("\n"),
+        }
+      }
+
+      const json = raw.match(/\{[\s\S]*\}/)
+      let parsed: any
+      try {
+        parsed = json ? JSON.parse(json[0]) : undefined
+      } catch {
+        parsed = undefined
+      }
+      if (!parsed) return { content: `模型没有给出可解析的 JSON，原文：\n${raw.slice(0, 800)}` }
+
+      const title = String(parsed.title ?? idea).slice(0, 60)
+      const brief = String(parsed.brief ?? "")
+      const profile = String(parsed.profile ?? "").trim()
+      const gate = ["data", "cite", "text", "none"].includes(parsed.gate) ? parsed.gate : ""
+      const checklist = Array.isArray(parsed.checklist) ? parsed.checklist.map(String) : []
+
+      return {
+        content: [
+          `建议任务：${title}`,
+          "",
+          brief,
+          "",
+          checklist.length ? `验收点：\n${checklist.map((item: string) => `- ${item}`).join("\n")}` : "",
+          "",
+          "确认后这样派：",
+          `superagent_task_dispatch({ title: ${JSON.stringify(title)}, brief: ${JSON.stringify(brief)}${profile ? `, profile: ${JSON.stringify(profile)}` : ""}${gate ? `, gate: ${JSON.stringify(gate)}` : ""} })`,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      }
+    }
+
     const profileList = async () => {
       const profiles = await readProfiles()
       if (profiles.length === 0) {
@@ -756,8 +895,18 @@ export default Plugin.define({
       if (index >= 0) profiles[index] = next
       else profiles.push(next)
       await writeProfiles(profiles)
+      let agentPath = ""
+      try {
+        agentPath = await writeAgentFile(next)
+      } catch (err: any) {
+        return { content: `已保存 agent「${name}」，但写 agent 定义失败：${err?.message ?? err}` }
+      }
       return {
-        content: `${index >= 0 ? "已更新" : "已新建"} agent「${name}」。\n派活时传 profile: "${name}" 就会带上这套设定。`,
+        content: [
+          `${index >= 0 ? "已更新" : "已新建"} agent「${name}」。`,
+          `定义文件：${agentPath}`,
+          `派活时传 profile: "${name}"，或在对话里 @${agentSlug(name)} 直接用。`,
+        ].join("\n"),
       }
     }
 
@@ -768,11 +917,28 @@ export default Plugin.define({
       const remaining = profiles.filter((item) => item.name !== name)
       if (remaining.length === profiles.length) return { content: `没有名为「${name}」的 agent。` }
       await writeProfiles(remaining)
-      return { content: `已删除 agent「${name}」。` }
+      await removeAgentFile(name)
+      return { content: `已删除 agent「${name}」及其定义文件。` }
     }
 
     await ctx.tool.transform((editor) => {
       editor.namespace({ name: "superagent", description: "Router + Worker：把任务派给独立会话执行，完成后只回一条摘要" })
+
+      editor.add({
+        name: "plan",
+        description:
+          "把一句模糊的想法拆成可派发的任务：标题、自包含说明、建议的 agent 设定、审查类型、验收点。只给建议，不自动派发。",
+        input: {
+          type: "object",
+          properties: {
+            idea: { type: "string", description: "你脑子里的想法，一句话也行" },
+          },
+          required: ["idea"],
+          additionalProperties: false,
+        },
+        options: { namespace: "superagent", codemode: true },
+        execute: plan,
+      })
 
       editor.add({
         name: "profile_list",
