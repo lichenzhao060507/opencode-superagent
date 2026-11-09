@@ -2,9 +2,10 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { insertNode as _$insertNode, effect as _$effect, memo as _$memo, createComponent as _$createComponent, insert as _$insert, setProp as _$setProp, createElement as _$createElement } from "@opentui/solid";
+import { memo as _$memo, createComponent as _$createComponent, createTextNode as _$createTextNode, effect as _$effect, insertNode as _$insertNode, insert as _$insert, setProp as _$setProp, createElement as _$createElement } from "@opentui/solid";
 import { Plugin } from "@opencode/plugin/tui";
 import { For, Show, createSignal, onCleanup } from "solid-js";
+import { RGBA } from "@opentui/core";
 import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 
@@ -39,13 +40,18 @@ async function writeAgentFile(profile, baseDir) {
 
 
 
+
 /**
  * superagent 的 TUI 部分。
  *
  * 三件事：
- * 1. 侧边栏显示任务账本（可折叠，折叠状态由模块内信号共享）。
+ * 1. 侧边栏显示任务账本（可折叠，折叠状态由模块内信号共享，点击标题也能收）。
  * 2. /sa 面板：看任务、跳到对应会话、直接编辑 agent 设定的提示词/记忆/MCP/skill。
  * 3. /saf：收起或展开侧边栏。
+ *
+ * 视觉规范沿用 WeSearch（2026-10-16 定稿）：只读主题 text / textMuted 两色、
+ * 零 emoji、按钮统一 4 字、分段网格 3 格 × 宽 10 + 4 条单轨 = 34 列，
+ * 落在侧栏内容宽 37 列以内。CJK 按 2 列计算，截断加省略号。
  *
  * 上下文一律用 prop 传进组件，不在组件里调 usePlugin()：
  * 槽位内容由宿主的 X0 错误边界渲染，不保证包在 PluginContextProvider 内，
@@ -60,8 +66,58 @@ async function writeAgentFile(profile, baseDir) {
 const RECENT_FAILURE_MS = 10 * 60_000;
 const MAX_ROWS = 3;
 
-/** 展开/收起是全局状态：命令和侧边栏读同一个信号。 */
+/** 侧栏内容宽 34（WeSearch 实测内容宽 37，留 3 列余量）。 */
+const CONTENT_WIDTH = 34;
+const SEGMENT_WIDTH = 10;
+
+/** 分段按钮底纹：半透明灰，深浅主题自适应；悬停加深一档。 */
+const WASH_NONE = RGBA.fromValues(0, 0, 0, 0);
+const WASH_IDLE = RGBA.fromValues(0.5, 0.5, 0.5, 0.2);
+const WASH_HOVER = RGBA.fromValues(0.5, 0.5, 0.5, 0.38);
+
+/** 展开/收起是全局状态：命令、标题点击、按钮读同一个信号。 */
 const [expanded, setExpanded] = createSignal(true);
+
+/* ------------------------------- 终端列宽 ------------------------------- */
+
+/** 单个字符的终端列宽（CJK 及全角记 2 列，其余 1 列）。 */
+function charWidth(ch) {
+  const cp = ch.codePointAt(0) ?? 0;
+  const wide = cp >= 0x1100 && cp <= 0x115f || cp >= 0x2e80 && cp <= 0xa4cf || cp >= 0xac00 && cp <= 0xd7a3 || cp >= 0xf900 && cp <= 0xfaff || cp >= 0xfe30 && cp <= 0xfe4f || cp >= 0xff00 && cp <= 0xff60 || cp >= 0xffe0 && cp <= 0xffe6;
+  return wide ? 2 : 1;
+}
+function colWidth(text) {
+  let width = 0;
+  for (const ch of text) width += charWidth(ch);
+  return width;
+}
+
+/** 按列宽截断，超宽补省略号。省略号本身要占 1 列，所以文本只能用到 max-1。 */
+function clipCols(text, max) {
+  if (max <= 0) return "";
+  if (colWidth(text) <= max) return text;
+  let width = 0;
+  let out = "";
+  for (const ch of text) {
+    const w = charWidth(ch);
+    if (width + w > max - 1) break;
+    out += ch;
+    width += w;
+  }
+  return `${out}…`;
+}
+
+/**
+ * 右侧留出固定列宽后把左侧补满。
+ * 不给布局引擎留判断题：空格写进文本节点，宽度就一定是算好的。
+ */
+function padTo(text, cols) {
+  const clipped = clipCols(text, Math.max(0, cols));
+  return clipped + " ".repeat(Math.max(0, cols - colWidth(clipped)));
+}
+
+/* --------------------------------- 探针 --------------------------------- */
+
 function pidText() {
   try {
     if (typeof process !== "undefined" && process?.pid) return `pid=${process.pid}`;
@@ -95,6 +151,9 @@ function probe(line) {
     // 探针本身绝不能影响插件
   }
 }
+
+/* -------------------------------- 数据层 -------------------------------- */
+
 function ledgerPath() {
   const base = baseDir();
   return base ? join(base, "tasks.json") : "";
@@ -110,10 +169,6 @@ function agentsDir() {
   } catch {
     return "";
   }
-}
-function clip(text, max = 30) {
-  const flat = String(text ?? "").replace(/\s+/g, " ").trim();
-  return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
 }
 function readJson(path, fallback) {
   if (!path) return fallback;
@@ -184,10 +239,57 @@ function readColors(context) {
     };
   }
 }
+
+/* -------------------------------- 组件 -------------------------------- */
+
+/** 分段按钮：「 标签 」带底纹；灰=常态、白=悬停；点击触发。 */
+function Segment(props) {
+  const colors = () => readColors(props.context);
+  const [hover, setHover] = createSignal(false);
+  return (() => {
+    var _el$ = _$createElement("box"),
+      _el$2 = _$createElement("text");
+    _$insertNode(_el$, _el$2);
+    _$setProp(_el$, "width", 10);
+    _$setProp(_el$, "height", 1);
+    _$setProp(_el$, "onMouseUp", event => {
+      if (event?.button !== 0) return;
+      event?.stopPropagation?.();
+      props.onPress();
+    });
+    _$setProp(_el$, "onMouseOver", () => setHover(true));
+    _$setProp(_el$, "onMouseOut", () => setHover(false));
+    _$setProp(_el$2, "width", "100%");
+    _$setProp(_el$2, "textAlign", "center");
+    _$setProp(_el$2, "selectable", false);
+    _$insert(_el$2, () => ` ${props.label} `);
+    _$effect(_p$ => {
+      var _v$ = hover() ? WASH_HOVER : WASH_IDLE,
+        _v$2 = hover() ? colors().fg : colors().muted;
+      _v$ !== _p$.e && (_p$.e = _$setProp(_el$, "backgroundColor", _v$, _p$.e));
+      _v$2 !== _p$.t && (_p$.t = _$setProp(_el$2, "fg", _v$2, _p$.t));
+      return _p$;
+    }, {
+      e: undefined,
+      t: undefined
+    });
+    return _el$;
+  })();
+}
+function Wall(props) {
+  return (() => {
+    var _el$3 = _$createElement("text");
+    _$insertNode(_el$3, _$createTextNode(`│`));
+    _$setProp(_el$3, "selectable", false);
+    _$effect(_$p => _$setProp(_el$3, "fg", readColors(props.context).muted, _$p));
+    return _el$3;
+  })();
+}
 function Sidebar(props) {
   const colors = () => readColors(props.context);
   const [tasks, setTasks] = createSignal([]);
   const [agents, setAgents] = createSignal(0);
+  const [headHover, setHeadHover] = createSignal(false);
   const refresh = () => {
     setTasks(readLedger());
     setAgents(readProfiles().length);
@@ -198,65 +300,182 @@ function Sidebar(props) {
   const running = () => tasks().filter(task => task.state === "running");
   const failed = () => tasks().filter(isRecentFailure);
   const recent = () => tasks().filter(task => task.state === "done" || task.state === "cancelled").slice(0, 2);
-  const head = () => {
-    const mark = expanded() ? "▾" : "▸";
-    if (running().length > 0) return `${mark} Superagent v5 · ${running().length} 个运行中`;
-    if (failed().length > 0) return `${mark} Superagent v5 · ${failed().length} 个待处理`;
-    return `${mark} Superagent v5 · 空闲`;
+  const statusWord = () => {
+    if (running().length > 0) return `${running().length} 运行中`;
+    if (failed().length > 0) return `${failed().length} 待处理`;
+    return "空闲";
+  };
+  const headLeft = () => padTo(`${expanded() ? "▾" : "▸"} Superagent`, CONTENT_WIDTH - colWidth(statusWord()));
+
+  /** 运行中优先，其次待处理；都空时退回最近完成的两条。 */
+  const rows = () => {
+    const live = [...running(), ...failed()].slice(0, MAX_ROWS);
+    if (live.length > 0) return live;
+    return recent();
+  };
+
+  /** 任务行拆两段：标题走正文色、时长走弱色，右端对齐到固定列宽。 */
+  const rowParts = task => {
+    const minutes = typeof task.minutes === "number" && task.minutes > 0 ? `${task.minutes}m` : "";
+    const right = task.state === "running" || task.state === "done" ? minutes : "";
+    const leftCols = CONTENT_WIDTH - colWidth(right);
+    const title = clipCols(String(task.title ?? ""), Math.max(4, leftCols - 2));
+    return {
+      left: padTo(`${stateMark(task.state)} ${title}`, leftCols),
+      right
+    };
   };
   return (() => {
-    var _el$ = _$createElement("box"),
-      _el$2 = _$createElement("text");
-    _$insertNode(_el$, _el$2);
-    _$setProp(_el$, "flexDirection", "column");
-    _$insert(_el$2, head);
-    _$insert(_el$, _$createComponent(Show, {
+    var _el$5 = _$createElement("box"),
+      _el$6 = _$createElement("box"),
+      _el$7 = _$createElement("box"),
+      _el$8 = _$createElement("text"),
+      _el$9 = _$createElement("b"),
+      _el$0 = _$createElement("text"),
+      _el$1 = _$createElement("box");
+    _$insertNode(_el$5, _el$6);
+    _$insertNode(_el$5, _el$1);
+    _$setProp(_el$5, "flexDirection", "column");
+    _$setProp(_el$5, "gap", 0);
+    _$insertNode(_el$6, _el$7);
+    _$setProp(_el$6, "height", 1);
+    _$setProp(_el$6, "onMouseUp", event => {
+      if (event?.button !== 0) return;
+      event?.stopPropagation?.();
+      setExpanded(!expanded());
+    });
+    _$setProp(_el$6, "onMouseOver", () => setHeadHover(true));
+    _$setProp(_el$6, "onMouseOut", () => setHeadHover(false));
+    _$insertNode(_el$7, _el$8);
+    _$insertNode(_el$7, _el$0);
+    _$setProp(_el$7, "flexDirection", "row");
+    _$setProp(_el$7, "height", 1);
+    _$insertNode(_el$8, _el$9);
+    _$setProp(_el$8, "selectable", false);
+    _$insert(_el$9, headLeft);
+    _$setProp(_el$0, "selectable", false);
+    _$insert(_el$0, statusWord);
+    _$setProp(_el$1, "flexDirection", "row");
+    _$setProp(_el$1, "height", 1);
+    _$insert(_el$1, _$createComponent(Wall, {
+      get context() {
+        return props.context;
+      }
+    }), null);
+    _$insert(_el$1, _$createComponent(Segment, {
+      get context() {
+        return props.context;
+      },
+      label: "\u4EFB\u52A1\u9762\u677F",
+      onPress: () => void openPanel(props.context)
+    }), null);
+    _$insert(_el$1, _$createComponent(Wall, {
+      get context() {
+        return props.context;
+      }
+    }), null);
+    _$insert(_el$1, _$createComponent(Segment, {
+      get context() {
+        return props.context;
+      },
+      get label() {
+        return expanded() ? "收起面板" : "展开面板";
+      },
+      onPress: () => setExpanded(!expanded())
+    }), null);
+    _$insert(_el$1, _$createComponent(Wall, {
+      get context() {
+        return props.context;
+      }
+    }), null);
+    _$insert(_el$1, _$createComponent(Segment, {
+      get context() {
+        return props.context;
+      },
+      label: "\u65B0\u5EFA\u4EE3\u7406",
+      onPress: () => void createAgent(props.context)
+    }), null);
+    _$insert(_el$1, _$createComponent(Wall, {
+      get context() {
+        return props.context;
+      }
+    }), null);
+    _$insert(_el$5, _$createComponent(Show, {
       get when() {
         return expanded();
       },
       get children() {
         return [_$createComponent(For, {
           get each() {
-            return [...running(), ...failed()].slice(0, MAX_ROWS);
+            return rows();
           },
-          children: task => (() => {
-            var _el$4 = _$createElement("text");
-            _$insert(_el$4, () => `  ${task.state === "running" ? "●" : "✗"} ${clip(task.title)}${task.state === "running" ? ` · ${task.minutes}m` : ""}`);
-            _$effect(_$p => _$setProp(_el$4, "fg", colors().fg, _$p));
-            return _el$4;
-          })()
-        }), _$createComponent(Show, {
-          get when() {
-            return _$memo(() => !!(running().length === 0 && failed().length === 0))() && recent().length > 0;
-          },
-          get children() {
-            return _$createComponent(For, {
-              get each() {
-                return recent();
-              },
-              children: task => (() => {
-                var _el$5 = _$createElement("text");
-                _$insert(_el$5, () => `  ✓ ${clip(task.title)}`);
-                _$effect(_$p => _$setProp(_el$5, "fg", colors().fg, _$p));
-                return _el$5;
-              })()
-            });
+          children: task => {
+            const parts = rowParts(task);
+            return (() => {
+              var _el$13 = _$createElement("box"),
+                _el$14 = _$createElement("text"),
+                _el$15 = _$createElement("text");
+              _$insertNode(_el$13, _el$14);
+              _$insertNode(_el$13, _el$15);
+              _$setProp(_el$13, "flexDirection", "row");
+              _$setProp(_el$13, "height", 1);
+              _$setProp(_el$14, "selectable", false);
+              _$insert(_el$14, () => parts.left);
+              _$setProp(_el$15, "selectable", false);
+              _$insert(_el$15, () => parts.right);
+              _$effect(_p$ => {
+                var _v$6 = colors().fg,
+                  _v$7 = colors().muted;
+                _v$6 !== _p$.e && (_p$.e = _$setProp(_el$14, "fg", _v$6, _p$.e));
+                _v$7 !== _p$.t && (_p$.t = _$setProp(_el$15, "fg", _v$7, _p$.t));
+                return _p$;
+              }, {
+                e: undefined,
+                t: undefined
+              });
+              return _el$13;
+            })();
           }
         }), _$createComponent(Show, {
           get when() {
-            return agents() > 0;
+            return rows().length === 0;
           },
           get children() {
-            var _el$3 = _$createElement("text");
-            _$insert(_el$3, () => `  ${agents()} 个 agent · /sa 编辑`);
-            _$effect(_$p => _$setProp(_el$3, "fg", colors().muted, _$p));
-            return _el$3;
+            var _el$10 = _$createElement("text");
+            _$insertNode(_el$10, _$createTextNode(` 暂无任务 · /sa 派活`));
+            _$setProp(_el$10, "selectable", false);
+            _$effect(_$p => _$setProp(_el$10, "fg", colors().muted, _$p));
+            return _el$10;
           }
         })];
       }
     }), null);
-    _$effect(_$p => _$setProp(_el$2, "fg", colors().fg, _$p));
-    return _el$;
+    _$insert(_el$5, _$createComponent(Show, {
+      get when() {
+        return agents() > 0;
+      },
+      get children() {
+        var _el$12 = _$createElement("text");
+        _$setProp(_el$12, "selectable", false);
+        _$insert(_el$12, () => clipCols(` ${agents()} 个代理 · /sa 编辑`, CONTENT_WIDTH));
+        _$effect(_$p => _$setProp(_el$12, "fg", colors().muted, _$p));
+        return _el$12;
+      }
+    }), null);
+    _$effect(_p$ => {
+      var _v$3 = headHover() ? WASH_IDLE : WASH_NONE,
+        _v$4 = colors().fg,
+        _v$5 = colors().muted;
+      _v$3 !== _p$.e && (_p$.e = _$setProp(_el$6, "backgroundColor", _v$3, _p$.e));
+      _v$4 !== _p$.t && (_p$.t = _$setProp(_el$8, "fg", _v$4, _p$.t));
+      _v$5 !== _p$.a && (_p$.a = _$setProp(_el$0, "fg", _v$5, _p$.a));
+      return _p$;
+    }, {
+      e: undefined,
+      t: undefined,
+      a: undefined
+    });
+    return _el$5;
   })();
 }
 
@@ -285,12 +504,21 @@ function Commands(props) {
         name: "saf"
       },
       run: () => setExpanded(!expanded())
+    }, {
+      id: "superagent.new",
+      title: "Superagent：新建 agent",
+      group: "Superagent",
+      palette: true,
+      slash: {
+        name: "san"
+      },
+      run: () => void createAgent(props.context)
     }]
   }));
   return (() => {
-    var _el$6 = _$createElement("box");
-    _$setProp(_el$6, "flexDirection", "column");
-    return _el$6;
+    var _el$16 = _$createElement("box");
+    _$setProp(_el$16, "flexDirection", "column");
+    return _el$16;
   })();
 }
 export default Plugin.define({
@@ -335,6 +563,45 @@ export default Plugin.define({
     };
   }
 });
+
+/* -------------------------------- 面板 -------------------------------- */
+
+async function createAgent(context) {
+  try {
+    const name = await context.ui.dialog.prompt({
+      title: "新建代理",
+      placeholder: "例如：数据核对"
+    });
+    if (!name || !name.trim()) return;
+    const clean = name.trim();
+    const profiles = readProfiles();
+    if (profiles.some(item => item.name === clean)) {
+      context.ui.toast.show({
+        message: `「${clean}」已存在`,
+        variant: "warning"
+      });
+      return;
+    }
+    saveProfiles([...profiles, {
+      name: clean
+    }]);
+    await saveAgentFile({
+      name: clean
+    });
+    probe(`新建代理 ${clean}`);
+    context.ui.toast.show({
+      message: `已创建「${clean}」，接着设置提示词`,
+      variant: "success"
+    });
+    await editProfile(context, clean);
+  } catch (error) {
+    probe(`新建代理失败：${String(error)}`);
+    context.ui.toast.show({
+      message: `新建失败：${String(error)}`,
+      variant: "error"
+    });
+  }
+}
 async function openPanel(context) {
   probe("/sa 触发");
   try {
@@ -364,19 +631,7 @@ async function openPanel(context) {
     });
     if (!picked) return;
     if (picked === "new") {
-      const name = await context.ui.dialog.prompt({
-        title: "新建 agent",
-        placeholder: "例如：数据核对"
-      });
-      if (!name || !name.trim()) return;
-      const clean = name.trim();
-      await saveProfiles([...profiles, {
-        name: clean
-      }]);
-      await saveAgentFile({
-        name: clean
-      });
-      await editProfile(context, clean);
+      await createAgent(context);
       return;
     }
     if (picked.startsWith("profile:")) {
@@ -447,7 +702,7 @@ async function editProfile(context, name) {
     options: fields.map(field => ({
       title: field.label,
       value: field.id,
-      description: field.value ? clip(field.value, 50) : "（空）"
+      description: field.value ? clipCols(field.value, 50) : "（空）"
     }))
   });
   if (!picked) return;
@@ -472,7 +727,7 @@ async function editProfile(context, name) {
     next[picked] = text || undefined;
   }
   const updated = profiles.map(item => item.name === name ? next : item);
-  await saveProfiles(updated);
+  saveProfiles(updated);
   await saveAgentFile(next);
   probe(`已保存 ${name}.${picked}`);
   context.ui.toast.show({
