@@ -1,0 +1,11 @@
+{
+  "name": "opencode-superagent-server",
+  "version": "0.3.0",
+  "type": "module",
+  "private": true,
+  "main": "./index.ts",
+  "description": "Server part: dispatch tools, ledger, watchdog, review gate.",
+  "dependencies": {
+    "@opencode/plugin": "^2.2.5"
+  }
+}

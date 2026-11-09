@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "opencode-superagent",
+  "version": "0.3.0",
+  "description": "Router + Worker for OpenCode: dispatch a task to an isolated session, gate the result with a read-only reviewer, and watch the ledger in the sidebar.",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "build": "node tui/build.mjs",
+    "sync": "node scripts/sync.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lichenzhao060507/opencode-superagent.git"
+  },
+  "keywords": ["opencode", "opencode-plugin", "agent", "router", "worker"]
+}

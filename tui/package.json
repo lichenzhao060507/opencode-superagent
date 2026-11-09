@@ -1,0 +1,13 @@
+{
+  "name": "opencode-superagent-tui",
+  "version": "0.3.0",
+  "type": "module",
+  "private": true,
+  "main": "./index.ts",
+  "description": "TUI part: sidebar ledger and /sa command.",
+  "exports": {
+    ".": "./index.ts",
+    "./tui": "./dist/tui.js"
+  },
+  "files": ["index.ts", "tui.ts", "src", "dist"]
+}
