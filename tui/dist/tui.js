@@ -285,27 +285,108 @@ function Wall(props) {
     return _el$3;
   })();
 }
+
+/** 右对齐到固定列宽（左侧补空格）。 */
+function padStartCols(text, cols) {
+  const clipped = clipCols(text, Math.max(0, cols));
+  return " ".repeat(Math.max(0, cols - colWidth(clipped))) + clipped;
+}
+
+/** 右侧槽固定占 2 列：悬停提示在 `4m` 与 `›` 之间切换时整行不会抖动。 */
+const ROW_RIGHT_COLS = 2;
+const ROW_LEFT_COLS = CONTENT_WIDTH - ROW_RIGHT_COLS;
+
+/** 一条任务：悬停高亮，有会话就可以点进去。 */
+function TaskLine(props) {
+  const [hover, setHover] = createSignal(false);
+  const colors = () => readColors(props.context);
+  const navigable = () => Boolean(props.task.sessionID);
+  const lit = () => hover() && navigable();
+  const parts = () => {
+    const minutes = typeof props.task.minutes === "number" && props.task.minutes > 0 ? `${props.task.minutes}m` : "";
+    const timing = props.task.state === "running" || props.task.state === "done" ? minutes : "";
+    const mark = props.task.state === "running" ? props.pulse ? "●" : "○" : stateMark(props.task.state);
+    const title = clipCols(String(props.task.title ?? ""), Math.max(4, ROW_LEFT_COLS - 2));
+    return {
+      left: padTo(`${mark} ${title}`, ROW_LEFT_COLS),
+      right: padStartCols(lit() ? "›" : timing, ROW_RIGHT_COLS)
+    };
+  };
+  return (() => {
+    var _el$5 = _$createElement("box"),
+      _el$6 = _$createElement("text"),
+      _el$7 = _$createElement("text");
+    _$insertNode(_el$5, _el$6);
+    _$insertNode(_el$5, _el$7);
+    _$setProp(_el$5, "flexDirection", "row");
+    _$setProp(_el$5, "height", 1);
+    _$setProp(_el$5, "onMouseOver", () => setHover(true));
+    _$setProp(_el$5, "onMouseOut", () => setHover(false));
+    _$setProp(_el$5, "onMouseUp", event => {
+      if (event?.button !== 0) return;
+      event?.stopPropagation?.();
+      const sessionID = props.task.sessionID;
+      if (!sessionID) return;
+      props.context.ui.router.navigate({
+        type: "session",
+        sessionID
+      });
+    });
+    _$setProp(_el$6, "selectable", false);
+    _$insert(_el$6, () => parts().left);
+    _$setProp(_el$7, "selectable", false);
+    _$insert(_el$7, () => parts().right);
+    _$effect(_p$ => {
+      var _v$3 = lit() ? WASH_IDLE : WASH_NONE,
+        _v$4 = colors().fg,
+        _v$5 = colors().muted;
+      _v$3 !== _p$.e && (_p$.e = _$setProp(_el$5, "backgroundColor", _v$3, _p$.e));
+      _v$4 !== _p$.t && (_p$.t = _$setProp(_el$6, "fg", _v$4, _p$.t));
+      _v$5 !== _p$.a && (_p$.a = _$setProp(_el$7, "fg", _v$5, _p$.a));
+      return _p$;
+    }, {
+      e: undefined,
+      t: undefined,
+      a: undefined
+    });
+    return _el$5;
+  })();
+}
 function Sidebar(props) {
   const colors = () => readColors(props.context);
   const [tasks, setTasks] = createSignal([]);
-  const [agents, setAgents] = createSignal(0);
+  const [profiles, setProfiles] = createSignal([]);
   const [headHover, setHeadHover] = createSignal(false);
+  const [pulse, setPulse] = createSignal(false);
   const refresh = () => {
     setTasks(readLedger());
-    setAgents(readProfiles().length);
+    setProfiles(readProfiles());
   };
   refresh();
-  const timer = setInterval(refresh, 4000);
-  onCleanup(() => clearInterval(timer));
+  const ledgerTimer = setInterval(refresh, 4000);
+  /** 脉动只在真有运行中任务时才翻信号；空闲时醒来即返回，不产生重渲染。 */
+  const pulseTimer = setInterval(() => {
+    if (!tasks().some(task => task.state === "running")) return;
+    setPulse(value => !value);
+  }, 600);
+  onCleanup(() => {
+    clearInterval(ledgerTimer);
+    clearInterval(pulseTimer);
+  });
   const running = () => tasks().filter(task => task.state === "running");
   const failed = () => tasks().filter(isRecentFailure);
   const recent = () => tasks().filter(task => task.state === "done" || task.state === "cancelled").slice(0, 2);
+  const total = () => tasks().length;
+  const mcpCount = () => profiles().reduce((sum, item) => sum + (item.mcp?.length ?? 0), 0);
+  const skillCount = () => profiles().reduce((sum, item) => sum + (item.skills?.length ?? 0), 0);
   const statusWord = () => {
     if (running().length > 0) return `${running().length} 运行中`;
     if (failed().length > 0) return `${failed().length} 待处理`;
     return "空闲";
   };
-  const headLeft = () => padTo(`${expanded() ? "▾" : "▸"} Superagent`, CONTENT_WIDTH - colWidth(statusWord()));
+
+  /** 表头带总数角标：收起后看不到明细，也能知道账本里有几条。 */
+  const headLeft = () => padTo(`${expanded() ? "▾" : "▸"} Superagent${total() > 0 ? ` ${total()}` : ""}`, CONTENT_WIDTH - colWidth(statusWord()));
 
   /** 运行中优先，其次待处理；都空时退回最近完成的两条。 */
   const rows = () => {
@@ -314,67 +395,65 @@ function Sidebar(props) {
     return recent();
   };
 
-  /** 任务行拆两段：标题走正文色、时长走弱色，右端对齐到固定列宽。 */
-  const rowParts = task => {
-    const minutes = typeof task.minutes === "number" && task.minutes > 0 ? `${task.minutes}m` : "";
-    const right = task.state === "running" || task.state === "done" ? minutes : "";
-    const leftCols = CONTENT_WIDTH - colWidth(right);
-    const title = clipCols(String(task.title ?? ""), Math.max(4, leftCols - 2));
-    return {
-      left: padTo(`${stateMark(task.state)} ${title}`, leftCols),
-      right
-    };
+  /** agent 配置概览：几个代理、挂了多少 MCP 与 skill。 */
+  const footer = () => {
+    const list = profiles();
+    if (list.length === 0) return "";
+    const parts = [`${list.length} 个代理`];
+    if (mcpCount() > 0) parts.push(`MCP ${mcpCount()}`);
+    if (skillCount() > 0) parts.push(`Skill ${skillCount()}`);
+    return clipCols(` ${parts.join(" · ")}`, CONTENT_WIDTH);
   };
   return (() => {
-    var _el$5 = _$createElement("box"),
-      _el$6 = _$createElement("box"),
-      _el$7 = _$createElement("box"),
-      _el$8 = _$createElement("text"),
-      _el$9 = _$createElement("b"),
-      _el$0 = _$createElement("text"),
-      _el$1 = _$createElement("box");
-    _$insertNode(_el$5, _el$6);
-    _$insertNode(_el$5, _el$1);
-    _$setProp(_el$5, "flexDirection", "column");
-    _$setProp(_el$5, "gap", 0);
-    _$insertNode(_el$6, _el$7);
-    _$setProp(_el$6, "height", 1);
-    _$setProp(_el$6, "onMouseUp", event => {
+    var _el$8 = _$createElement("box"),
+      _el$9 = _$createElement("box"),
+      _el$0 = _$createElement("box"),
+      _el$1 = _$createElement("text"),
+      _el$10 = _$createElement("b"),
+      _el$11 = _$createElement("text"),
+      _el$12 = _$createElement("box");
+    _$insertNode(_el$8, _el$9);
+    _$insertNode(_el$8, _el$12);
+    _$setProp(_el$8, "flexDirection", "column");
+    _$setProp(_el$8, "gap", 0);
+    _$insertNode(_el$9, _el$0);
+    _$setProp(_el$9, "height", 1);
+    _$setProp(_el$9, "onMouseUp", event => {
       if (event?.button !== 0) return;
       event?.stopPropagation?.();
       setExpanded(!expanded());
     });
-    _$setProp(_el$6, "onMouseOver", () => setHeadHover(true));
-    _$setProp(_el$6, "onMouseOut", () => setHeadHover(false));
-    _$insertNode(_el$7, _el$8);
-    _$insertNode(_el$7, _el$0);
-    _$setProp(_el$7, "flexDirection", "row");
-    _$setProp(_el$7, "height", 1);
-    _$insertNode(_el$8, _el$9);
-    _$setProp(_el$8, "selectable", false);
-    _$insert(_el$9, headLeft);
-    _$setProp(_el$0, "selectable", false);
-    _$insert(_el$0, statusWord);
-    _$setProp(_el$1, "flexDirection", "row");
-    _$setProp(_el$1, "height", 1);
-    _$insert(_el$1, _$createComponent(Wall, {
+    _$setProp(_el$9, "onMouseOver", () => setHeadHover(true));
+    _$setProp(_el$9, "onMouseOut", () => setHeadHover(false));
+    _$insertNode(_el$0, _el$1);
+    _$insertNode(_el$0, _el$11);
+    _$setProp(_el$0, "flexDirection", "row");
+    _$setProp(_el$0, "height", 1);
+    _$insertNode(_el$1, _el$10);
+    _$setProp(_el$1, "selectable", false);
+    _$insert(_el$10, headLeft);
+    _$setProp(_el$11, "selectable", false);
+    _$insert(_el$11, statusWord);
+    _$setProp(_el$12, "flexDirection", "row");
+    _$setProp(_el$12, "height", 1);
+    _$insert(_el$12, _$createComponent(Wall, {
       get context() {
         return props.context;
       }
     }), null);
-    _$insert(_el$1, _$createComponent(Segment, {
+    _$insert(_el$12, _$createComponent(Segment, {
       get context() {
         return props.context;
       },
       label: "\u4EFB\u52A1\u9762\u677F",
       onPress: () => void openPanel(props.context)
     }), null);
-    _$insert(_el$1, _$createComponent(Wall, {
+    _$insert(_el$12, _$createComponent(Wall, {
       get context() {
         return props.context;
       }
     }), null);
-    _$insert(_el$1, _$createComponent(Segment, {
+    _$insert(_el$12, _$createComponent(Segment, {
       get context() {
         return props.context;
       },
@@ -383,24 +462,24 @@ function Sidebar(props) {
       },
       onPress: () => setExpanded(!expanded())
     }), null);
-    _$insert(_el$1, _$createComponent(Wall, {
+    _$insert(_el$12, _$createComponent(Wall, {
       get context() {
         return props.context;
       }
     }), null);
-    _$insert(_el$1, _$createComponent(Segment, {
+    _$insert(_el$12, _$createComponent(Segment, {
       get context() {
         return props.context;
       },
       label: "\u65B0\u5EFA\u4EE3\u7406",
       onPress: () => void createAgent(props.context)
     }), null);
-    _$insert(_el$1, _$createComponent(Wall, {
+    _$insert(_el$12, _$createComponent(Wall, {
       get context() {
         return props.context;
       }
     }), null);
-    _$insert(_el$5, _$createComponent(Show, {
+    _$insert(_el$8, _$createComponent(Show, {
       get when() {
         return expanded();
       },
@@ -409,73 +488,54 @@ function Sidebar(props) {
           get each() {
             return rows();
           },
-          children: task => {
-            const parts = rowParts(task);
-            return (() => {
-              var _el$13 = _$createElement("box"),
-                _el$14 = _$createElement("text"),
-                _el$15 = _$createElement("text");
-              _$insertNode(_el$13, _el$14);
-              _$insertNode(_el$13, _el$15);
-              _$setProp(_el$13, "flexDirection", "row");
-              _$setProp(_el$13, "height", 1);
-              _$setProp(_el$14, "selectable", false);
-              _$insert(_el$14, () => parts.left);
-              _$setProp(_el$15, "selectable", false);
-              _$insert(_el$15, () => parts.right);
-              _$effect(_p$ => {
-                var _v$6 = colors().fg,
-                  _v$7 = colors().muted;
-                _v$6 !== _p$.e && (_p$.e = _$setProp(_el$14, "fg", _v$6, _p$.e));
-                _v$7 !== _p$.t && (_p$.t = _$setProp(_el$15, "fg", _v$7, _p$.t));
-                return _p$;
-              }, {
-                e: undefined,
-                t: undefined
-              });
-              return _el$13;
-            })();
-          }
+          children: task => _$createComponent(TaskLine, {
+            get context() {
+              return props.context;
+            },
+            task: task,
+            get pulse() {
+              return pulse();
+            }
+          })
         }), _$createComponent(Show, {
           get when() {
             return rows().length === 0;
           },
           get children() {
-            var _el$10 = _$createElement("text");
-            _$insertNode(_el$10, _$createTextNode(` 暂无任务 · /sa 派活`));
-            _$setProp(_el$10, "selectable", false);
-            _$effect(_$p => _$setProp(_el$10, "fg", colors().muted, _$p));
-            return _el$10;
+            var _el$13 = _$createElement("text");
+            _$insertNode(_el$13, _$createTextNode(` 暂无任务 · /sa 派活`));
+            _$setProp(_el$13, "selectable", false);
+            _$effect(_$p => _$setProp(_el$13, "fg", colors().muted, _$p));
+            return _el$13;
+          }
+        }), _$createComponent(Show, {
+          get when() {
+            return footer().length > 0;
+          },
+          get children() {
+            var _el$15 = _$createElement("text");
+            _$setProp(_el$15, "selectable", false);
+            _$insert(_el$15, footer);
+            _$effect(_$p => _$setProp(_el$15, "fg", colors().muted, _$p));
+            return _el$15;
           }
         })];
       }
     }), null);
-    _$insert(_el$5, _$createComponent(Show, {
-      get when() {
-        return agents() > 0;
-      },
-      get children() {
-        var _el$12 = _$createElement("text");
-        _$setProp(_el$12, "selectable", false);
-        _$insert(_el$12, () => clipCols(` ${agents()} 个代理 · /sa 编辑`, CONTENT_WIDTH));
-        _$effect(_$p => _$setProp(_el$12, "fg", colors().muted, _$p));
-        return _el$12;
-      }
-    }), null);
     _$effect(_p$ => {
-      var _v$3 = headHover() ? WASH_IDLE : WASH_NONE,
-        _v$4 = colors().fg,
-        _v$5 = colors().muted;
-      _v$3 !== _p$.e && (_p$.e = _$setProp(_el$6, "backgroundColor", _v$3, _p$.e));
-      _v$4 !== _p$.t && (_p$.t = _$setProp(_el$8, "fg", _v$4, _p$.t));
-      _v$5 !== _p$.a && (_p$.a = _$setProp(_el$0, "fg", _v$5, _p$.a));
+      var _v$6 = headHover() ? WASH_IDLE : WASH_NONE,
+        _v$7 = colors().fg,
+        _v$8 = colors().muted;
+      _v$6 !== _p$.e && (_p$.e = _$setProp(_el$9, "backgroundColor", _v$6, _p$.e));
+      _v$7 !== _p$.t && (_p$.t = _$setProp(_el$1, "fg", _v$7, _p$.t));
+      _v$8 !== _p$.a && (_p$.a = _$setProp(_el$11, "fg", _v$8, _p$.a));
       return _p$;
     }, {
       e: undefined,
       t: undefined,
       a: undefined
     });
-    return _el$5;
+    return _el$8;
   })();
 }
 

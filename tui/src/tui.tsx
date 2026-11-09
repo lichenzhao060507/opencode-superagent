@@ -275,24 +275,90 @@ function Wall(props: { context: Ctx }) {
   )
 }
 
+/** 右对齐到固定列宽（左侧补空格）。 */
+function padStartCols(text: string, cols: number) {
+  const clipped = clipCols(text, Math.max(0, cols))
+  return " ".repeat(Math.max(0, cols - colWidth(clipped))) + clipped
+}
+
+/** 右侧槽固定占 2 列：悬停提示在 `4m` 与 `›` 之间切换时整行不会抖动。 */
+const ROW_RIGHT_COLS = 2
+const ROW_LEFT_COLS = CONTENT_WIDTH - ROW_RIGHT_COLS
+
+/** 一条任务：悬停高亮，有会话就可以点进去。 */
+function TaskLine(props: { context: Ctx; task: TaskRow; pulse: boolean }) {
+  const [hover, setHover] = createSignal(false)
+  const colors = () => readColors(props.context)
+  const navigable = () => Boolean(props.task.sessionID)
+  const lit = () => hover() && navigable()
+
+  const parts = () => {
+    const minutes = typeof props.task.minutes === "number" && props.task.minutes > 0 ? `${props.task.minutes}m` : ""
+    const timing = props.task.state === "running" || props.task.state === "done" ? minutes : ""
+    const mark = props.task.state === "running" ? (props.pulse ? "●" : "○") : stateMark(props.task.state)
+    const title = clipCols(String(props.task.title ?? ""), Math.max(4, ROW_LEFT_COLS - 2))
+    return {
+      left: padTo(`${mark} ${title}`, ROW_LEFT_COLS),
+      right: padStartCols(lit() ? "›" : timing, ROW_RIGHT_COLS),
+    }
+  }
+
+  return (
+    <box
+      flexDirection="row"
+      height={1}
+      backgroundColor={lit() ? WASH_IDLE : WASH_NONE}
+      onMouseOver={() => setHover(true)}
+      onMouseOut={() => setHover(false)}
+      onMouseUp={(event: any) => {
+        if (event?.button !== 0) return
+        event?.stopPropagation?.()
+        const sessionID = props.task.sessionID
+        if (!sessionID) return
+        props.context.ui.router.navigate({ type: "session", sessionID })
+      }}
+    >
+      <text selectable={false} fg={colors().fg}>
+        {parts().left}
+      </text>
+      <text selectable={false} fg={colors().muted}>
+        {parts().right}
+      </text>
+    </box>
+  )
+}
+
 function Sidebar(props: { context: Ctx }) {
   const colors = () => readColors(props.context)
   const [tasks, setTasks] = createSignal<TaskRow[]>([])
-  const [agents, setAgents] = createSignal(0)
+  const [profiles, setProfiles] = createSignal<ProfileRow[]>([])
   const [headHover, setHeadHover] = createSignal(false)
+  const [pulse, setPulse] = createSignal(false)
 
   const refresh = () => {
     setTasks(readLedger())
-    setAgents(readProfiles().length)
+    setProfiles(readProfiles())
   }
 
   refresh()
-  const timer = setInterval(refresh, 4000)
-  onCleanup(() => clearInterval(timer))
+  const ledgerTimer = setInterval(refresh, 4000)
+  /** 脉动只在真有运行中任务时才翻信号；空闲时醒来即返回，不产生重渲染。 */
+  const pulseTimer = setInterval(() => {
+    if (!tasks().some((task) => task.state === "running")) return
+    setPulse((value) => !value)
+  }, 600)
+  onCleanup(() => {
+    clearInterval(ledgerTimer)
+    clearInterval(pulseTimer)
+  })
 
   const running = () => tasks().filter((task) => task.state === "running")
   const failed = () => tasks().filter(isRecentFailure)
   const recent = () => tasks().filter((task) => task.state === "done" || task.state === "cancelled").slice(0, 2)
+
+  const total = () => tasks().length
+  const mcpCount = () => profiles().reduce((sum, item) => sum + (item.mcp?.length ?? 0), 0)
+  const skillCount = () => profiles().reduce((sum, item) => sum + (item.skills?.length ?? 0), 0)
 
   const statusWord = () => {
     if (running().length > 0) return `${running().length} 运行中`
@@ -300,7 +366,12 @@ function Sidebar(props: { context: Ctx }) {
     return "空闲"
   }
 
-  const headLeft = () => padTo(`${expanded() ? "▾" : "▸"} Superagent`, CONTENT_WIDTH - colWidth(statusWord()))
+  /** 表头带总数角标：收起后看不到明细，也能知道账本里有几条。 */
+  const headLeft = () =>
+    padTo(
+      `${expanded() ? "▾" : "▸"} Superagent${total() > 0 ? ` ${total()}` : ""}`,
+      CONTENT_WIDTH - colWidth(statusWord()),
+    )
 
   /** 运行中优先，其次待处理；都空时退回最近完成的两条。 */
   const rows = () => {
@@ -309,13 +380,14 @@ function Sidebar(props: { context: Ctx }) {
     return recent()
   }
 
-  /** 任务行拆两段：标题走正文色、时长走弱色，右端对齐到固定列宽。 */
-  const rowParts = (task: TaskRow) => {
-    const minutes = typeof task.minutes === "number" && task.minutes > 0 ? `${task.minutes}m` : ""
-    const right = task.state === "running" || task.state === "done" ? minutes : ""
-    const leftCols = CONTENT_WIDTH - colWidth(right)
-    const title = clipCols(String(task.title ?? ""), Math.max(4, leftCols - 2))
-    return { left: padTo(`${stateMark(task.state)} ${title}`, leftCols), right }
+  /** agent 配置概览：几个代理、挂了多少 MCP 与 skill。 */
+  const footer = () => {
+    const list = profiles()
+    if (list.length === 0) return ""
+    const parts = [`${list.length} 个代理`]
+    if (mcpCount() > 0) parts.push(`MCP ${mcpCount()}`)
+    if (skillCount() > 0) parts.push(`Skill ${skillCount()}`)
+    return clipCols(` ${parts.join(" · ")}`, CONTENT_WIDTH)
   }
 
   return (
@@ -356,32 +428,17 @@ function Sidebar(props: { context: Ctx }) {
       </box>
 
       <Show when={expanded()}>
-        <For each={rows()}>
-          {(task) => {
-            const parts = rowParts(task)
-            return (
-              <box flexDirection="row" height={1}>
-                <text selectable={false} fg={colors().fg}>
-                  {parts.left}
-                </text>
-                <text selectable={false} fg={colors().muted}>
-                  {parts.right}
-                </text>
-              </box>
-            )
-          }}
-        </For>
+        <For each={rows()}>{(task) => <TaskLine context={props.context} task={task} pulse={pulse()} />}</For>
         <Show when={rows().length === 0}>
           <text selectable={false} fg={colors().muted}>
             {" 暂无任务 · /sa 派活"}
           </text>
         </Show>
-      </Show>
-
-      <Show when={agents() > 0}>
-        <text selectable={false} fg={colors().muted}>
-          {clipCols(` ${agents()} 个代理 · /sa 编辑`, CONTENT_WIDTH)}
-        </text>
+        <Show when={footer().length > 0}>
+          <text selectable={false} fg={colors().muted}>
+            {footer()}
+          </text>
+        </Show>
       </Show>
     </box>
   )
